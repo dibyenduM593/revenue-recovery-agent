@@ -5,6 +5,7 @@ from sqlalchemy import pool
 
 from alembic import context
 
+from app import models  # noqa: F401 -- populates Base.metadata for autogenerate
 from app.db import Base
 from app.settings import DATABASE_URL
 

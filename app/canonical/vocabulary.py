@@ -56,3 +56,89 @@ RETRY_POLICY: dict[FailureReason, RetryPolicy] = {
     FailureReason.INVALID_DETAILS: RetryPolicy(False, 0, None, Escalation.REQUEST_NEW_INSTRUMENT),
     FailureReason.STOLEN_CARD: RetryPolicy(False, 0, None, Escalation.FLAG_NO_CONTACT),
 }
+
+
+class PaymentStatus(str, Enum):
+    CREATED = "CREATED"
+    AUTHORIZED = "AUTHORIZED"
+    CAPTURED = "CAPTURED"
+    FAILED = "FAILED"
+    REFUNDED = "REFUNDED"
+
+
+class CheckoutStatus(str, Enum):
+    STARTED = "STARTED"
+    COMPLETED = "COMPLETED"
+    ABANDONED = "ABANDONED"
+
+
+class SubscriptionStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    PAST_DUE = "PAST_DUE"
+    CANCELLED = "CANCELLED"
+
+
+class MandateStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    REVOKED = "REVOKED"
+
+
+class InvoiceStatus(str, Enum):
+    OPEN = "OPEN"
+    PAID = "PAID"
+    OVERDUE = "OVERDUE"
+    VOID = "VOID"
+
+
+class ProcessingStatus(str, Enum):
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    PROCESSED = "PROCESSED"
+    FAILED = "FAILED"
+    DEAD_LETTER = "DEAD_LETTER"
+
+
+class NormalizationStage(str, Enum):
+    STRUCTURAL = "STRUCTURAL"
+    TYPING = "TYPING"
+    UNITS = "UNITS"
+    SEMANTIC = "SEMANTIC"
+    VALIDATION = "VALIDATION"
+
+
+class EntityType(str, Enum):
+    PAYMENT = "PAYMENT"
+    CHECKOUT = "CHECKOUT"
+    INVOICE = "INVOICE"
+    SUBSCRIPTION = "SUBSCRIPTION"
+
+
+class Strategy(str, Enum):
+    RETRY = "RETRY"
+    NUDGE = "NUDGE"
+    REQUEST_INSTRUMENT = "REQUEST_INSTRUMENT"
+    ESCALATE = "ESCALATE"
+
+
+class Cohort(str, Enum):
+    TREATMENT = "TREATMENT"
+    HOLDOUT = "HOLDOUT"
+
+
+class Channel(str, Enum):
+    SMS = "SMS"
+    EMAIL = "EMAIL"
+    WHATSAPP = "WHATSAPP"
+    VOICE = "VOICE"
+
+
+class OutcomeStatus(str, Enum):
+    RECOVERED = "RECOVERED"
+    NOT_RECOVERED = "NOT_RECOVERED"
+    PENDING = "PENDING"
+
+
+class AttributionMethod(str, Enum):
+    CORRELATION_ID = "CORRELATION_ID"
+    PAYMENT_INTENT_ID = "PAYMENT_INTENT_ID"
+    INVOICE_ID = "INVOICE_ID"
