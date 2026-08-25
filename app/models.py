@@ -179,6 +179,10 @@ class FieldMapping(Base):
 
     __table_args__ = (
         Index("ix_field_mappings_lookup", "business_id", "source_provider", "source_field"),
+        UniqueConstraint(
+            "business_id", "source_provider", "source_field", "version",
+            name="ux_field_mappings_source",
+        ),
     )
 
 
