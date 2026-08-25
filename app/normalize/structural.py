@@ -41,18 +41,18 @@ def apply_mapping(payload: dict[str, Any], mappings: list[FieldMapping]) -> dict
         if value is _MISSING or value is None:
             continue
 
-        transform = TRANSFORMS.get(mapping.transform)
+        transform = TRANSFORMS.get(mapping.transformation)
         if transform is None:
             raise NormalizationError(
                 NormalizationStage.STRUCTURAL,
-                f"unknown transform {mapping.transform!r} for source_field {mapping.source_field!r}",
+                f"unknown transform {mapping.transformation!r} for source_field {mapping.source_field!r}",
             )
         try:
             result[mapping.canonical_field] = transform(value)
         except Exception as exc:
             raise NormalizationError(
                 NormalizationStage.STRUCTURAL,
-                f"transform {mapping.transform!r} failed on {mapping.source_field!r}: {exc}",
+                f"transform {mapping.transformation!r} failed on {mapping.source_field!r}: {exc}",
             ) from exc
 
     return result

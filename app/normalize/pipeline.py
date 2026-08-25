@@ -8,7 +8,6 @@ it is cheap to recompute from raw_events.payload and there is nowhere
 correct to put it until semantic classification exists.
 """
 
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -36,17 +35,20 @@ class NormalizedRecord:
     failure_code_raw: str | None
 
 
-def _load_field_mappings(session: Session, business_id: uuid.UUID, source_provider: str) -> list[FieldMapping]:
+def _load_field_mappings(session: Session, provider: str) -> list[FieldMapping]:
+    """field_mappings is global per provider (see schema.sql), not per-business:
+
+    the shape of a Razorpay payload does not vary by which business receives it.
+    """
     stmt = select(FieldMapping).where(
-        FieldMapping.business_id == business_id,
-        FieldMapping.source_provider == source_provider,
+        FieldMapping.provider == provider,
         FieldMapping.approved.is_(True),
     )
     return list(session.scalars(stmt))
 
 
 def normalize_raw_event(session: Session, raw_event: RawEvent) -> NormalizedRecord:
-    mappings = _load_field_mappings(session, raw_event.business_id, raw_event.source_provider)
+    mappings = _load_field_mappings(session, raw_event.source_provider)
     extracted = structural.apply_mapping(raw_event.payload, mappings)
     typed = typing_stage.coerce(extracted)
     money = units.to_money(typed)

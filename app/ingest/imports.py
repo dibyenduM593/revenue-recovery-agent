@@ -39,7 +39,7 @@ async def import_events(file: UploadFile):
                 payload=record["payload"],
                 occurred_at=datetime.fromisoformat(record["occurred_at"]),
                 headers=record.get("headers"),
-                ingestion_method="import",
+                ingestion_method="JSON",
             )
             if was_new:
                 inserted += 1

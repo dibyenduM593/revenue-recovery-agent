@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.canonical.vocabulary import RETRY_POLICY, FailureReason
+from app.canonical.vocabulary import FAILURE_TAXONOMY, FailureReason
 
 NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "revenue-recovery.internal")
 
@@ -248,7 +248,7 @@ def _generate_payment_intents(cfg: GeneratorConfig, rng: random.Random,
             continue
 
         failure = _pick_failure(cfg, rng)
-        policy = RETRY_POLICY[failure.canonical]
+        policy = FAILURE_TAXONOMY[failure.canonical]
         recovers = policy.retryable and rng.random() < 0.4
         max_attempts = policy.max_attempts if policy.retryable else 1
         n_attempts = rng.randint(1, max_attempts) if policy.retryable else 1

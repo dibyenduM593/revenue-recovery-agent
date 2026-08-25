@@ -77,13 +77,14 @@ def _process_one(event_id: uuid.UUID) -> str:
                 DeadLetterEvent(
                     raw_event_id=event.raw_event_id,
                     business_id=event.business_id,
-                    stage=exc.stage.value,
+                    failed_stage=exc.stage.value,
                     error_message=exc.message,
+                    attempt_count=event.attempt_count,
                     created_at=datetime.now(timezone.utc),
                 )
             )
             if event.attempt_count >= MAX_ATTEMPTS:
-                event.processing_status = ProcessingStatus.DEAD_LETTER.value
+                event.processing_status = ProcessingStatus.DEAD.value
                 outcome = "dead_letter"
             else:
                 event.processing_status = ProcessingStatus.PENDING.value
