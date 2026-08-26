@@ -29,14 +29,19 @@ companion). Day 1 (vocabulary: `EventType`, `FailureReason`,
 `LossCategory`, `FaultAttribution`, `FAILURE_TAXONOMY`; `Money` with a
 currency-exponent table; `canonical/events.py`) and Day 2 (`schema.sql`,
 28 tables, applied as the initial Alembic migration) are done and verified
-against real Postgres. Ingestion (`POST /v1/imports`, idempotency, the
-SKIP LOCKED worker) and normalization stages 1-3 (structural, typing,
-units) carry over from the v1 build and are re-verified against the new
-schema: the generator's 1036-event backlog drains with zero dead letters,
-and the dead-letter path itself is separately confirmed with an injected
-malformed event.
+against real Postgres. Day 3 (ingestion + queue) is done: `POST /v1/webhooks/{provider}` verifies
+HMAC-SHA256 over the raw request body before any JSON parsing, checks a
+5-minute freshness window on the payload's own `created_at`, and stores
+through the same idempotent `raw_events` insert as `POST /v1/imports`.
+Currently wired for Razorpay only (`RAZORPAY_WEBHOOK_SECRET` in `.env`);
+an unconfigured provider gets a 404. The SKIP LOCKED worker and
+normalization stages 1-3 (structural, typing, units) carry over from the
+v1 build and are re-verified against the new schema: the generator's
+1036-event backlog drains with zero dead letters, the dead-letter path
+itself is separately confirmed with an injected malformed event, and the
+webhook endpoint is confirmed idempotent (same payload posted 3x -> one
+row), signature/timestamp rejection both return the right status codes.
 
-Not yet built: `POST /v1/webhooks/{provider}` with HMAC verification, the
-semantic + validation normalization stages and the upsert into
-payments/revenue_events, and everything from the loss ledger
+Not yet built: the semantic + validation normalization stages and the
+upsert into payments/revenue_events, and everything from the loss ledger
 (`revenue_at_risk`) onward. See the build plan for the full day sequence.
