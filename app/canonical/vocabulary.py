@@ -5,11 +5,17 @@ from typing import NamedTuple, Optional
 class EventType(str, Enum):
     PAYMENT_FAILED = "PAYMENT_FAILED"
     PAYMENT_SUCCEEDED = "PAYMENT_SUCCEEDED"
-    CHECKOUT_ABANDONED = "CHECKOUT_ABANDONED"
+    CHECKOUT_STARTED = "CHECKOUT_STARTED"
+    CHECKOUT_COMPLETED = "CHECKOUT_COMPLETED"
+    CHECKOUT_ABANDONED = "CHECKOUT_ABANDONED"  # derived by the Day 5 sweep job; never a raw event_type_raw value
+    INVOICE_ISSUED = "INVOICE_ISSUED"
+    INVOICE_PAID = "INVOICE_PAID"
     INVOICE_OVERDUE = "INVOICE_OVERDUE"
     SUBSCRIPTION_PAYMENT_FAILED = "SUBSCRIPTION_PAYMENT_FAILED"
     MANDATE_REVOKED = "MANDATE_REVOKED"
     REFUND_CREATED = "REFUND_CREATED"
+    ORDER_CREATED = "ORDER_CREATED"
+    DISPUTE_CREATED = "DISPUTE_CREATED"
 
 
 class FailureReason(str, Enum):
@@ -21,6 +27,7 @@ class FailureReason(str, Enum):
     MANDATE_REVOKED = "MANDATE_REVOKED"
     INVALID_DETAILS = "INVALID_DETAILS"
     TECHNICAL_ERROR = "TECHNICAL_ERROR"
+    ATTENTION_SLIP = "ATTENTION_SLIP"  # wrong PIN/OTP entry -- synchronous, mid-checkout
 
 
 class Backoff(str, Enum):
@@ -65,6 +72,7 @@ class LossCategory(str, Enum):
     B2 = "B2"  # subscription mandate lapsed -- nudge to re-authorize, event-attributed
     B3 = "B3"  # payment instrument issue -- nudge to update, token-attributed
     B4 = "B4"  # invoice/receivable overdue -- nudge to pay, event-attributed (B2B, long window)
+    B5 = "B5"  # attention-slip (wrong PIN/OTP) -- proves the decision NOT to nudge: async contact hurts, not helps
     X_INSUFFICIENT_FUNDS = "X_INSUFFICIENT_FUNDS"
     X_FRAUD = "X_FRAUD"
     X_BANK_BLOCK = "X_BANK_BLOCK"  # reserved: no FailureReason maps here yet
@@ -141,7 +149,7 @@ FAILURE_TAXONOMY: dict[FailureReason, FailureTaxonomyEntry] = {
         max_attempts=0,
         backoff=None,
         default_action=Action.REQUEST_NEW_INSTRUMENT,
-        escalation_action=Action.NUDGE,
+        escalation_action=None,  # non-retryable: default_action IS the only response, nothing to escalate to
         attribution_window_seconds=72 * 3600,
         notes="Token-based nudge to a payment link for updating the instrument.",
     ),
@@ -153,7 +161,7 @@ FAILURE_TAXONOMY: dict[FailureReason, FailureTaxonomyEntry] = {
         max_attempts=0,
         backoff=None,
         default_action=Action.RECOLLECT_MANDATE,
-        escalation_action=Action.NUDGE,
+        escalation_action=None,  # non-retryable: default_action IS the only response, nothing to escalate to
         attribution_window_seconds=7 * 86400,
         notes="Subscription re-authorization; attributed via the next SUBSCRIPTION_CHARGED event, not a token click.",
     ),
@@ -178,9 +186,23 @@ FAILURE_TAXONOMY: dict[FailureReason, FailureTaxonomyEntry] = {
         max_attempts=0,
         backoff=None,
         default_action=Action.REQUEST_NEW_INSTRUMENT,
-        escalation_action=Action.NUDGE,
+        escalation_action=None,
         attribution_window_seconds=72 * 3600,
         notes="Token-based nudge to correct payment instrument details.",
+    ),
+    FailureReason.ATTENTION_SLIP: FailureTaxonomyEntry(
+        loss_category=LossCategory.B5,
+        fault_attribution=FaultAttribution.CUSTOMER_SENTIMENT,
+        claimable=True,
+        retryable=False,
+        max_attempts=0,
+        backoff=None,
+        default_action=Action.STOP,
+        escalation_action=None,
+        attribution_window_seconds=0,
+        notes="A wrong PIN/OTP is synchronous and mid-session -- the customer is already retrying it "
+        "themselves in the checkout flow. An async nudge later doesn't help and reads as pestering; "
+        "the correct policy response is to record the loss and do nothing.",
     ),
     FailureReason.STOLEN_CARD: FailureTaxonomyEntry(
         loss_category=LossCategory.X_FRAUD,
@@ -189,8 +211,8 @@ FAILURE_TAXONOMY: dict[FailureReason, FailureTaxonomyEntry] = {
         retryable=False,
         max_attempts=0,
         backoff=None,
-        default_action=Action.STOP,
-        escalation_action=Action.OPS_ALERT,
+        default_action=Action.OPS_ALERT,  # the response IS "alert ops", not a customer-facing action at all
+        escalation_action=None,
         attribution_window_seconds=0,
         notes="Fraud signal -- never contact the customer. Excluded from every recovery number.",
     ),

@@ -37,6 +37,18 @@ FIELD_COERCERS: dict[str, Callable[[Any], Any]] = {
     "provider_subscription_id": str,
     "status_raw": str,
     "failure_code_raw": str,
+    "error_source": str,
+    "error_step": str,
+    "error_description": str,
+    "issuer_bank": str,
+    "card_network": str,
+    "card_last4": str,
+    "card_expiry_month": int,
+    "card_expiry_year": int,
+    "vpa": str,
+    "wallet": str,
+    "due_at": _coerce_datetime,
+    "recovery_token_raw": str,
 }
 
 

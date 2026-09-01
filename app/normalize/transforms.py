@@ -33,6 +33,17 @@ def _divide_by_100(value: Any) -> float:
     return float(value) / 100
 
 
+def _decimal_string_to_minor(value: Any) -> int:
+    """"1495.00" -> 149500. Shopify sends decimal-string major units, unlike
+
+    Razorpay's integer minor units -- exactly the kind of provider-specific
+    unit mismatch this whitelist exists to make explicit and testable.
+    """
+    from decimal import Decimal
+
+    return int((Decimal(str(value)) * 100).to_integral_value())
+
+
 TRANSFORMS: dict[str, Callable[[Any], Any]] = {
     "identity": _identity,
     "unix_seconds_to_datetime": _unix_seconds_to_datetime,
@@ -40,4 +51,5 @@ TRANSFORMS: dict[str, Callable[[Any], Any]] = {
     "iso_to_datetime": _iso_to_datetime,
     "upper": _upper,
     "divide_by_100": _divide_by_100,
+    "decimal_string_to_minor": _decimal_string_to_minor,
 }

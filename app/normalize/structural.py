@@ -34,8 +34,17 @@ def _get_path(payload: dict[str, Any], path: str) -> Any:
     return node
 
 
-def apply_mapping(payload: dict[str, Any], mappings: list[FieldMapping]) -> dict[str, Any]:
+def apply_mapping(payload: dict[str, Any], mappings: list[FieldMapping]) -> tuple[dict[str, Any], set[str]]:
+    """Returns (extracted canonical fields, source_objects that actually matched).
+
+    Only one non-envelope source_object's paths resolve for any given
+    payload, since a provider nests each entity kind under a different
+    top-level key -- the matched set is how later stages know which
+    entity kind (payment/checkout/invoice/subscription/refund) this event
+    is about, without re-deriving it from event_type_raw.
+    """
     result: dict[str, Any] = {}
+    matched_objects: set[str] = set()
     for mapping in mappings:
         value = _get_path(payload, mapping.source_field)
         if value is _MISSING or value is None:
@@ -54,5 +63,6 @@ def apply_mapping(payload: dict[str, Any], mappings: list[FieldMapping]) -> dict
                 NormalizationStage.STRUCTURAL,
                 f"transform {mapping.transformation!r} failed on {mapping.source_field!r}: {exc}",
             ) from exc
+        matched_objects.add(mapping.source_object)
 
-    return result
+    return result, matched_objects

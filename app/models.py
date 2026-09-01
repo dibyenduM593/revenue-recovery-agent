@@ -75,7 +75,7 @@ class Customer(Base):
 
     __table_args__ = (
         CheckConstraint("customer_type IN ('B2C','B2B')", name="customers_customer_type_check"),
-        Index("ix_customers_business_email", "business_id", "email_normalized"),
+        UniqueConstraint("business_id", "email_normalized", name="customers_business_email_uq"),
         Index("ix_customers_business_phone", "business_id", "phone_e164"),
     )
 

@@ -28,7 +28,7 @@ import json
 import random
 import string
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -64,33 +64,81 @@ class FailureCode:
     error_description: str
     error_source: str
     canonical: FailureReason
+    weight: float  # fraction of all failed payments, per data-generation.md's failure mix
 
 
+# Two entries share canonical=DO_NOT_HONOR on purpose: the SAME provider
+# decline code ("payment_declined") arrives with error_source='bank' most of
+# the time and error_source='business' rarely -- that distinction, not the
+# failure_reason, is what A5 (false decline) actually depends on. Weights
+# sum to 1.0, matching data-generation.md's failure mix exactly.
 FAILURE_CODES: list[FailureCode] = [
     FailureCode("BAD_REQUEST_ERROR", "insufficient_funds",
                 "Payment failed due to insufficient funds in the customer's account.",
-                "bank", FailureReason.INSUFFICIENT_FUNDS),
+                "bank", FailureReason.INSUFFICIENT_FUNDS, 0.32),
     FailureCode("GATEWAY_ERROR", "issuer_unavailable",
                 "The card issuing bank or network could not be reached.",
-                "bank", FailureReason.ISSUER_UNAVAILABLE),
-    FailureCode("BAD_REQUEST_ERROR", "expired_card",
-                "The card has expired.",
-                "customer", FailureReason.EXPIRED_CARD),
-    FailureCode("BAD_REQUEST_ERROR", "payment_declined",
-                "The card issuer declined the payment.",
-                "bank", FailureReason.DO_NOT_HONOR),
-    FailureCode("BAD_REQUEST_ERROR", "restricted_card",
-                "The card has been reported lost or stolen.",
-                "bank", FailureReason.STOLEN_CARD),
-    FailureCode("BAD_REQUEST_ERROR", "incorrect_card_details",
-                "The card number, expiry date, or CVV is invalid.",
-                "customer", FailureReason.INVALID_DETAILS),
+                "bank", FailureReason.ISSUER_UNAVAILABLE, 0.14),
     FailureCode("SERVER_ERROR", "processing_error",
                 "An internal processing error occurred while contacting the bank.",
-                "gateway", FailureReason.TECHNICAL_ERROR),
+                "gateway", FailureReason.TECHNICAL_ERROR, 0.11),
+    FailureCode("BAD_REQUEST_ERROR", "expired_card",
+                "The card has expired.",
+                "customer", FailureReason.EXPIRED_CARD, 0.10),
+    FailureCode("BAD_REQUEST_ERROR", "payment_declined",
+                "The card issuer declined the payment.",
+                "bank", FailureReason.DO_NOT_HONOR, 0.09),
+    FailureCode("BAD_REQUEST_ERROR", "incorrect_otp",
+                "The OTP or PIN entered was incorrect.",
+                "customer", FailureReason.ATTENTION_SLIP, 0.08),
+    FailureCode("BAD_REQUEST_ERROR", "incorrect_card_details",
+                "The card number, expiry date, or CVV is invalid.",
+                "customer", FailureReason.INVALID_DETAILS, 0.06),
+    FailureCode("BAD_REQUEST_ERROR", "mandate_revoked",
+                "The payment mandate backing this charge has been revoked.",
+                "customer", FailureReason.MANDATE_REVOKED, 0.05),
+    FailureCode("BAD_REQUEST_ERROR", "restricted_card",
+                "The card has been reported lost or stolen.",
+                "bank", FailureReason.STOLEN_CARD, 0.03),
+    FailureCode("BAD_REQUEST_ERROR", "payment_declined",
+                "The card issuer declined the payment.",
+                "business", FailureReason.DO_NOT_HONOR, 0.02),
 ]
 
 PAYMENT_METHODS = ["card", "upi", "netbanking", "wallet"]
+
+ISSUING_BANKS = ["HDFC Bank", "ICICI Bank", "State Bank of India", "Axis Bank", "Kotak Mahindra Bank", "Yes Bank"]
+CARD_NETWORKS = ["Visa", "MasterCard", "RuPay", "Amex"]
+UPI_PSPS = ["okhdfcbank", "oksbi", "okicici", "okaxis", "ybl", "paytm"]
+WALLETS = ["paytm", "phonepe", "amazonpay", "mobikwik"]
+
+
+def _instrument_fields(rng: random.Random, method: str, customer: Customer) -> dict:
+    """Payment-method-specific fields, mirroring what Razorpay's real
+    payment.entity actually carries per method: a nested `card` object for
+    card payments, a bare `bank` code for netbanking, `vpa` for UPI,
+    `wallet` for wallet. issuer_bank (A1 bank-degradation detection) only
+    has a meaningful value for card and netbanking -- UPI and wallet
+    payments route through a PSP/wallet provider, not a specific bank.
+    """
+    if method == "card":
+        return {
+            "card": {
+                "issuer": rng.choice(ISSUING_BANKS),
+                "network": rng.choice(CARD_NETWORKS),
+                "last4": f"{rng.randint(0, 9999):04d}",
+                "expiry_month": rng.randint(1, 12),
+                "expiry_year": rng.randint(2027, 2032),
+            }
+        }
+    if method == "netbanking":
+        return {"bank": rng.choice(ISSUING_BANKS)}
+    if method == "upi":
+        local_part = customer.email.split("@")[0]
+        return {"vpa": f"{local_part}@{rng.choice(UPI_PSPS)}"}
+    if method == "wallet":
+        return {"wallet": rng.choice(WALLETS)}
+    return {}
 
 
 DEFAULT_ANCHOR = datetime(2026, 8, 25, tzinfo=timezone.utc)
@@ -99,33 +147,50 @@ DEFAULT_ANCHOR = datetime(2026, 8, 25, tzinfo=timezone.utc)
 @dataclass
 class GeneratorConfig:
     seed: int = 42
+    # business_id_for() keys ONLY off `seed` -- DEMO_BUSINESS_ID (settings.py)
+    # and every downstream stage (sweeps, recovery.run, simulate_world) all
+    # resolve the business from a fixed --seed, so it must stay stable.
+    # content_seed drives everything else (which customer gets which
+    # failure, which amount, which instrument): leave it None for the
+    # historical "one seed controls everything" behavior make demo /
+    # Gate D's determinism check relies on, or set it independently so the
+    # dashboard's orchestrator button can generate genuinely different
+    # transaction data on every click without ever changing which business
+    # the data belongs to.
+    content_seed: int | None = None
     days: int = 30
     anchor: datetime = DEFAULT_ANCHOR
     business_name: str = "Demo Business"
     currency: str = "INR"
     min_amount_minor: int = 9_900
     max_amount_minor: int = 250_000
+    # ~4% of amounts land here instead -- the tail that makes
+    # human_approval_above_minor (Rs 50,000 default) actually exercisable.
+    high_value_rate: float = 0.04
+    high_value_min_minor: int = 5_000_000
+    high_value_max_minor: int = 20_000_000
 
-    n_customers: int = 250
+    n_customers: int = 800
 
-    n_payment_intents: int = 400
+    n_payment_intents: int = 1_300
     payment_failure_rate: float = 0.55
+    dispute_rate: float = 0.02  # share of captured payments that also get disputed
 
-    n_checkouts: int = 150
+    n_checkouts: int = 480
     checkout_abandon_rate: float = 0.35
 
-    n_invoices: int = 80
+    n_invoices: int = 240
     invoice_overdue_rate: float = 0.30
 
-    n_subscriptions: int = 60
+    n_subscriptions: int = 160
     subscription_failure_rate: float = 0.25
     mandate_revoke_rate: float = 0.08
 
     refund_rate: float = 0.03
 
-    failure_weights: dict[FailureReason, float] = field(
-        default_factory=lambda: {code.canonical: 1.0 for code in FAILURE_CODES}
-    )
+    # Sad paths, deliberate: an untested dead-letter path is a broken one.
+    malformed_rate: float = 0.01
+    duplicate_delivery_rate: float = 0.03
 
 
 @dataclass
@@ -156,12 +221,18 @@ def _make_customers(cfg: GeneratorConfig, rng: random.Random) -> list[Customer]:
 
 
 def _pick_failure(cfg: GeneratorConfig, rng: random.Random) -> FailureCode:
-    weights = [cfg.failure_weights.get(code.canonical, 1.0) for code in FAILURE_CODES]
+    weights = [code.weight for code in FAILURE_CODES]
     return rng.choices(FAILURE_CODES, weights=weights, k=1)[0]
 
 
 def _random_time(cfg: GeneratorConfig, rng: random.Random, start: datetime) -> datetime:
     return start + timedelta(seconds=rng.uniform(0, cfg.days * 86_400))
+
+
+def _amount(cfg: GeneratorConfig, rng: random.Random) -> int:
+    if rng.random() < cfg.high_value_rate:
+        return round(rng.randint(cfg.high_value_min_minor, cfg.high_value_max_minor), -2)
+    return round(rng.randint(cfg.min_amount_minor, cfg.max_amount_minor), -2)
 
 
 def _event(business_id: uuid.UUID, source_provider: str, source_type: str,
@@ -197,6 +268,7 @@ def _payment_entity(rng: random.Random, payment_id: str, order_id: str, amount: 
         "notes": [],
         "created_at": _unix(created_at),
     }
+    entity.update(_instrument_fields(rng, entity["method"], customer))
     if subscription_id:
         entity["subscription_id"] = subscription_id
     if failure is not None:
@@ -223,6 +295,41 @@ def _webhook(event_name: str, entity_key: str, entity: dict) -> dict:
     }
 
 
+def _order_entity(order_id: str, amount: int, currency: str, customer: Customer, created_at: datetime) -> dict:
+    """Shopify-shaped, deliberately messy relative to Razorpay's own shape:
+
+    a decimal-string major-unit amount instead of an integer minor unit,
+    a lowercase currency code, ISO8601 timestamps instead of unix epoch.
+    """
+    return {
+        "id": order_id,
+        "financial_status": "pending",
+        "total_price": f"{amount / 100:.2f}",
+        "currency": currency.lower(),
+        "customer": {"email": customer.email, "phone": customer.phone},
+        "created_at": created_at.isoformat(),
+    }
+
+
+def _shopify_webhook(order_entity: dict) -> dict:
+    return {"topic": "orders/create", "order": order_entity}
+
+
+def _dispute_entity(dispute_id: str, payment_id: str, amount: int, currency: str,
+                     created_at: datetime, respond_by: datetime) -> dict:
+    return {
+        "id": dispute_id,
+        "entity": "dispute",
+        "payment_id": payment_id,
+        "amount": amount,
+        "currency": currency,
+        "reason_code": "goods_or_services_not_provided",
+        "status": "open",
+        "respond_by": _unix(respond_by),
+        "created_at": _unix(created_at),
+    }
+
+
 def _generate_payment_intents(cfg: GeneratorConfig, rng: random.Random,
                                customers: list[Customer], business_id: uuid.UUID,
                                start: datetime) -> tuple[list[dict], list[dict]]:
@@ -230,11 +337,29 @@ def _generate_payment_intents(cfg: GeneratorConfig, rng: random.Random,
     events: list[dict] = []
     successes: list[dict] = []
 
+    def _maybe_dispute(entity: dict, captured_at: datetime) -> None:
+        if rng.random() >= cfg.dispute_rate:
+            return
+        dispute_time = captured_at + timedelta(days=rng.uniform(1, 6))
+        respond_by = dispute_time + timedelta(days=7)
+        dispute_id = _rand_id(rng, "disp")
+        events.append(_event(business_id, "razorpay", "webhook", dispute_time,
+                              _webhook("payment.dispute.created", "dispute",
+                                       _dispute_entity(dispute_id, entity["id"], entity["amount"],
+                                                        entity["currency"], dispute_time, respond_by)),
+                              f"evt_{dispute_id}"))
+
     for i in range(cfg.n_payment_intents):
         customer = rng.choice(customers)
         order_id = _rand_id(rng, "order")
-        amount = round(rng.randint(cfg.min_amount_minor, cfg.max_amount_minor), -2)
+        amount = _amount(cfg, rng)
         t = _random_time(cfg, rng, start)
+
+        order_created_at = t - timedelta(minutes=rng.uniform(2, 45))
+        events.append(_event(business_id, "shopify", "webhook", order_created_at,
+                              _shopify_webhook(_order_entity(order_id, amount, cfg.currency, customer, order_created_at)),
+                              f"evt_{order_id}_created"))
+
         will_fail = rng.random() < cfg.payment_failure_rate
 
         if not will_fail:
@@ -245,6 +370,7 @@ def _generate_payment_intents(cfg: GeneratorConfig, rng: random.Random,
                                   _webhook("payment.captured", "payment", entity),
                                   f"evt_{payment_id}"))
             successes.append(entity)
+            _maybe_dispute(entity, t)
             continue
 
         failure = _pick_failure(cfg, rng)
@@ -267,6 +393,7 @@ def _generate_payment_intents(cfg: GeneratorConfig, rng: random.Random,
                                   f"evt_{payment_id}"))
             if status == "captured":
                 successes.append(entity)
+                _maybe_dispute(entity, attempt_time)
 
     return events, successes
 
@@ -278,7 +405,7 @@ def _generate_checkouts(cfg: GeneratorConfig, rng: random.Random,
     for i in range(cfg.n_checkouts):
         customer = rng.choice(customers)
         session_id = _rand_id(rng, "cs")
-        amount = round(rng.randint(cfg.min_amount_minor, cfg.max_amount_minor), -2)
+        amount = _amount(cfg, rng)
         t = _random_time(cfg, rng, start)
 
         started_payload = {
@@ -314,7 +441,7 @@ def _generate_invoices(cfg: GeneratorConfig, rng: random.Random,
     for i in range(cfg.n_invoices):
         customer = rng.choice(customers)
         invoice_id = _rand_id(rng, "inv")
-        amount = round(rng.randint(cfg.min_amount_minor, cfg.max_amount_minor), -2)
+        amount = _amount(cfg, rng)
         issued_at = _random_time(cfg, rng, start)
         due_at = issued_at + timedelta(days=rng.randint(3, 14))
         overdue = rng.random() < cfg.invoice_overdue_rate
@@ -355,7 +482,7 @@ def _generate_subscriptions(cfg: GeneratorConfig, rng: random.Random,
 
     for customer in subs_customers:
         subscription_id = _rand_id(rng, "sub")
-        amount = round(rng.randint(cfg.min_amount_minor, cfg.max_amount_minor), -2)
+        amount = _amount(cfg, rng)
         t = _random_time(cfg, rng, start)
         fails = rng.random() < cfg.subscription_failure_rate
 
@@ -385,6 +512,8 @@ def _generate_subscriptions(cfg: GeneratorConfig, rng: random.Random,
                 "entity": "subscription",
                 "status": "halted",
                 "customer_id": customer.email,
+                "amount": amount,
+                "currency": cfg.currency,
                 "created_at": _unix(halted_at),
             }
             events.append(_event(business_id, "razorpay", "webhook", halted_at,
@@ -418,7 +547,7 @@ def _generate_refunds(cfg: GeneratorConfig, rng: random.Random,
 
 
 def generate_dataset(cfg: GeneratorConfig) -> list[dict]:
-    rng = random.Random(cfg.seed)
+    rng = random.Random(cfg.content_seed if cfg.content_seed is not None else cfg.seed)
     business_id = business_id_for(cfg)
     start = cfg.anchor - timedelta(days=cfg.days)
     customers = _make_customers(cfg, rng)
@@ -437,7 +566,8 @@ def generate_dataset(cfg: GeneratorConfig) -> list[dict]:
 def summarize(events: list[dict]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for e in events:
-        key = f'{e["source_provider"]}:{e["payload"].get("event", e["payload"].get("event"))}'
+        name = e["payload"].get("event") or e["payload"].get("topic")
+        key = f'{e["source_provider"]}:{name}'
         counts[key] = counts.get(key, 0) + 1
     return dict(sorted(counts.items()))
 
@@ -453,11 +583,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate synthetic provider-shaped events.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--days", type=int, default=30)
-    parser.add_argument("--customers", type=int, default=250)
-    parser.add_argument("--payment-intents", type=int, default=400)
-    parser.add_argument("--checkouts", type=int, default=150)
-    parser.add_argument("--invoices", type=int, default=80)
-    parser.add_argument("--subscriptions", type=int, default=60)
+    parser.add_argument("--customers", type=int, default=800)
+    parser.add_argument("--payment-intents", type=int, default=1_300)
+    parser.add_argument("--checkouts", type=int, default=480)
+    parser.add_argument("--invoices", type=int, default=240)
+    parser.add_argument("--subscriptions", type=int, default=160)
     parser.add_argument("--out", type=Path, default=Path("seed/output/events.jsonl"))
     args = parser.parse_args()
 

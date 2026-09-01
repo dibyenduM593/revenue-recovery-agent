@@ -99,3 +99,11 @@ class CanonicalEvent(BaseModel):
     card_expiry_year: Optional[int] = Field(default=None, description="The card's expiry year (4-digit), when known.")
     vpa: Optional[str] = Field(default=None, description="The UPI virtual payment address used, when the payment method is UPI.")
     wallet: Optional[str] = Field(default=None, description="The wallet provider used, when the payment method is a wallet.")
+    due_at: Optional[datetime] = Field(
+        default=None, description="When this is due, for entities that carry a due date -- currently only invoices."
+    )
+    recovery_token_raw: Optional[str] = Field(
+        default=None,
+        description="The recovery token this payment carries, when the customer paid via a recovery link -- "
+        "the strongest possible evidence that a specific nudge, not just coincidence, produced this payment.",
+    )
