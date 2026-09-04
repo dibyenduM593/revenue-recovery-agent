@@ -9,3 +9,8 @@ venv/
 dist/
 build/
 seed/output/
+
+# Training data: regenerable from the ledger via app/scoring/export.py.
+# The model weights in models/ are what matter for results.
+data/
+*.log

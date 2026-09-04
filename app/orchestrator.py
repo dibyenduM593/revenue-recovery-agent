@@ -16,13 +16,24 @@ rest of this codebase (nothing here uses async def).
 import random
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import desc, select, text
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.models import Business, Customer, Payment
+from app.models import (
+    Business,
+    Customer,
+    CustomerRecoveryProfile,
+    Invoice,
+    Payment,
+    RecoveryAttempt,
+    RecoveryBatch,
+    RecoveryOutcome,
+    RevenueAtRisk,
+)
 from seed.generator import GeneratorConfig, business_id_for
 
 BUSINESS_SEED = 42  # fixed: DEMO_BUSINESS_ID and every stage below resolve the business from this
@@ -115,14 +126,29 @@ def populate(
 
 
 def launch_recovery() -> dict:
-    """Decide -> bound -> execute, one batch, live (not dry_run). By the
+    """Decide -> bound -> enqueue -> drain, one batch, live (not dry_run).
 
-    time this returns, every dispatch bounds.py's execute_action() allowed
-    (simulated SMS/WhatsApp/voice, real email, a retry submission) has
-    already happened synchronously in-process -- there's nothing left
-    in flight for a caller to wait on separately, which is what makes
-    "recovery launched" a true statement the instant this call resolves.
+    execute_action() no longer dispatches inline -- a channel-bearing
+    action is authorized and written to outbound_dispatches, then
+    app.dispatch_worker.drain() sends everything queued, highest predicted-
+    recovery-value first, re-checking time-sensitive bounds against the
+    current clock right before each send. Draining here, synchronously,
+    before this call returns, is what keeps "recovery launched" a true
+    statement the instant this call resolves -- simulate_replies() below
+    depends on every customer-facing attempt already having its real
+    executed_at set by the time it runs, or every recovery number in the
+    batch report would read as zero.
+
+    Two things happen after the batch that the batch itself doesn't do:
+    any live-demo item planted but not yet decided (excluded from
+    run_batch()'s own candidates -- see batch.py) gets its real
+    VOICE+WHATSAPP fan-out fired here; and app.live_poll starts, so a real
+    WhatsApp reply or a nudge window closing an hour from now still gets
+    detected and attributed without anyone clicking anything again.
     """
+    from app.dispatch_worker import drain as drain_dispatches
+    from app.live_demo import launch as launch_live_demo
+    from app.live_poll import start as start_live_poll
     from app.recovery.batch import run_batch
 
     business_id = _business_id()
@@ -136,7 +162,17 @@ def launch_recovery() -> dict:
         batch = run_batch(session, business_id, seed=BUSINESS_SEED)
         session.commit()
 
-        return {
+        pending_live_demo = session.execute(
+            select(RevenueAtRisk.at_risk_id).where(
+                RevenueAtRisk.business_id == business_id,
+                RevenueAtRisk.status == "OPEN",
+                RevenueAtRisk.attributes.has_key("live_demo"),
+            )
+        ).scalars().all()
+        # Read out of the ORM object before the session closes -- batch is
+        # detached the instant this block exits, and accessing its
+        # attributes after that raises DetachedInstanceError.
+        batch_summary = {
             "batch_id": str(batch.batch_id),
             "entities_scanned": batch.entities_scanned,
             "decisions_made": batch.decisions_made,
@@ -148,16 +184,34 @@ def launch_recovery() -> dict:
     finally:
         session.close()
 
+    dispatch_stats = drain_dispatches(seed=BUSINESS_SEED, business_id=business_id)
+    live_demo_results = [launch_live_demo(at_risk_id, business_id=business_id) for at_risk_id in pending_live_demo]
+    live_poll_started = start_live_poll(business_id)
+
+    return {
+        **batch_summary,
+        "dispatch": dispatch_stats,
+        "live_demo": live_demo_results,
+        "live_poll_started": live_poll_started,
+    }
+
 
 def simulate_replies() -> dict:
     """The world simulator's response model, run once: reads recovery_attempts,
 
     decides which ones a (simulated) customer responds to, and posts
     provider-shaped success events back through real ingestion -- never
-    written directly to recovery_outcomes. Drains those events, then runs
-    attribution so the batch report reflects what actually got matched.
+    written directly to recovery_outcomes. Drains those events, runs
+    attribution, then processes any nudge whose window closed unconverted
+    (app.recovery.nudge_retry): retries it (up to 3 tries total) or, on
+    the 3rd miss, writes the terminal NOT_RECOVERED outcome. A retry that
+    gets enqueued here is drained immediately so its own delivery_status
+    is real by the time this call returns, same discipline as
+    launch_recovery().
     """
+    from app.dispatch_worker import drain as drain_dispatches
     from app.recovery.attribution import run_attribution
+    from app.recovery.nudge_retry import process_expired_nudges
     from app.worker import drain
     from seed.simulate_world import simulate
 
@@ -178,16 +232,44 @@ def simulate_replies() -> dict:
     finally:
         session.close()
 
-    return {"simulate": sim_stats, "drain": drain_stats, "attribution": attribution_stats}
+    session = SessionLocal()
+    try:
+        retry_stats = process_expired_nudges(session, business_id)
+        session.commit()
+    finally:
+        session.close()
+    retry_dispatch_stats = drain_dispatches(seed=BUSINESS_SEED, business_id=business_id)
+
+    return {
+        "simulate": sim_stats, "drain": drain_stats, "attribution": attribution_stats,
+        "nudge_retry": retry_stats, "nudge_retry_dispatch": retry_dispatch_stats,
+    }
 
 
 def get_kpis() -> dict:
+    from app.recovery import human_review
     from app.recovery.report import build_report
 
     business_id = _business_id()
     session = SessionLocal()
     try:
         report = build_report(session, business_id)
+
+        # Across B2C+B2B combined -- a row can count toward this AND "in
+        # human hands" at once (high score, but still awaiting a human);
+        # that's intentional, not a double-count to reconcile.
+        confidently_recoverable_minor = session.execute(
+            select(func.coalesce(func.sum(RevenueAtRisk.at_risk_minor), 0))
+            .select_from(RevenueAtRisk)
+            .join(CustomerRecoveryProfile, CustomerRecoveryProfile.at_risk_id == RevenueAtRisk.at_risk_id)
+            .where(
+                RevenueAtRisk.business_id == business_id,
+                RevenueAtRisk.status.in_(("OPEN", "IN_RECOVERY")),
+                CustomerRecoveryProfile.predicted_score > 0.8,
+            )
+        ).scalar_one()
+
+        in_human_hands_minor = human_review.in_human_hands_minor(session, business_id)
     finally:
         session.close()
 
@@ -212,37 +294,118 @@ def get_kpis() -> dict:
         "net_minor": net_minor,
         "suppressed_compliance": report.suppressed_compliance,
         "stopped_by_rules": report.stopped_by_rules,
-        "held_for_approval": report.held_for_approval,
+        "confidently_recoverable_minor": int(confidently_recoverable_minor),
+        "in_human_hands_minor": in_human_hands_minor,
     }
 
 
-def get_transactions(limit: int = 200) -> list[dict]:
-    from app.models import RevenueAtRisk
+def _likelihood_label(score: float | None) -> str | None:
+    if score is None:
+        return None
+    if score >= 0.65:
+        return "high"
+    if score >= 0.40:
+        return "medium"
+    return "low"
 
+
+def _payment_transactions(business_id: uuid.UUID, session: Session, limit: int, customer_type: str | None = None) -> list[dict]:
+    query = (
+        select(Payment, Customer.email)
+        .outerjoin(Customer, Customer.customer_id == Payment.customer_id)
+        .where(Payment.business_id == business_id)
+    )
+    if customer_type is not None:
+        query = query.where(Customer.customer_type == customer_type)
+    rows = session.execute(query.order_by(desc(Payment.initiated_at)).limit(limit)).all()
+
+    payment_ids = [p.payment_id for p, _ in rows]
+    # A payment can accumulate more than one revenue_at_risk row across
+    # its lifetime (e.g. detected, then a later attempt succeeds and a
+    # fresh one opens) -- only the partial unique index guarantees
+    # uniqueness among OPEN rows, so pick the most recently detected one
+    # per payment in Python rather than assuming the join is 1:1.
+    latest_at_risk: dict[uuid.UUID, tuple[uuid.UUID, datetime]] = {}
+    if payment_ids:
+        ar_rows = session.execute(
+            select(RevenueAtRisk.entity_id, RevenueAtRisk.at_risk_id, RevenueAtRisk.detected_at).where(
+                RevenueAtRisk.business_id == business_id,
+                RevenueAtRisk.entity_type == "PAYMENT",
+                RevenueAtRisk.entity_id.in_(payment_ids),
+            )
+        ).all()
+        for entity_id, at_risk_id, detected_at in ar_rows:
+            current = latest_at_risk.get(entity_id)
+            if current is None or detected_at > current[1]:
+                latest_at_risk[entity_id] = (at_risk_id, detected_at)
+
+    score_by_at_risk: dict[uuid.UUID, float] = {}
+    at_risk_ids = [v[0] for v in latest_at_risk.values()]
+    if at_risk_ids:
+        score_rows = session.execute(
+            select(CustomerRecoveryProfile.at_risk_id, CustomerRecoveryProfile.predicted_score).where(
+                CustomerRecoveryProfile.business_id == business_id,
+                CustomerRecoveryProfile.at_risk_id.in_(at_risk_ids),
+            )
+        ).all()
+        score_by_at_risk = dict(score_rows)
+
+    result = []
+    for p, email in rows:
+        at_risk_id = latest_at_risk[p.payment_id][0] if p.payment_id in latest_at_risk else None
+        score = score_by_at_risk.get(at_risk_id) if at_risk_id else None
+        result.append({
+            "payment_id": str(p.payment_id),
+            "payment_intent_id": p.payment_intent_id,
+            "attempt_number": p.attempt_number,
+            "customer_email": email,
+            "amount_minor": p.amount_minor,
+            "currency": p.currency,
+            "status": p.payment_status,
+            "method": p.payment_method,
+            "failure_reason": p.failure_code_canonical,
+            "issuer_bank": p.issuer_bank,
+            "initiated_at": p.initiated_at.isoformat() if p.initiated_at else None,
+            "at_risk_id": str(at_risk_id) if at_risk_id else None,
+            "recovery_likelihood": _likelihood_label(score),
+        })
+    return result
+
+
+def get_transactions_b2c(limit: int = 200) -> list[dict]:
+    business_id = _business_id()
+    session = SessionLocal()
+    try:
+        return _payment_transactions(business_id, session, limit, customer_type="B2C")
+    finally:
+        session.close()
+
+
+def get_transactions_b2b(limit: int = 200) -> list[dict]:
+    """Invoice-shaped counterpart to _payment_transactions -- B2B losses
+
+    live in the invoices table, not payments, so they never appeared in
+    the dashboard at all until this.
+    """
     business_id = _business_id()
     session = SessionLocal()
     try:
         rows = session.execute(
-            select(Payment, Customer.email)
-            .outerjoin(Customer, Customer.customer_id == Payment.customer_id)
-            .where(Payment.business_id == business_id)
-            .order_by(desc(Payment.initiated_at))
+            select(Invoice, Customer.email, Customer.canonical_name)
+            .outerjoin(Customer, Customer.customer_id == Invoice.customer_id)
+            .where(Invoice.business_id == business_id, Customer.customer_type == "B2B")
+            .order_by(desc(Invoice.issued_at))
             .limit(limit)
         ).all()
 
-        payment_ids = [p.payment_id for p, _ in rows]
-        # A payment can accumulate more than one revenue_at_risk row across
-        # its lifetime (e.g. detected, then a later attempt succeeds and a
-        # fresh one opens) -- only the partial unique index guarantees
-        # uniqueness among OPEN rows, so pick the most recently detected one
-        # per payment in Python rather than assuming the join is 1:1.
+        invoice_ids = [inv.invoice_id for inv, _, _ in rows]
         latest_at_risk: dict[uuid.UUID, tuple[uuid.UUID, datetime]] = {}
-        if payment_ids:
+        if invoice_ids:
             ar_rows = session.execute(
                 select(RevenueAtRisk.entity_id, RevenueAtRisk.at_risk_id, RevenueAtRisk.detected_at).where(
                     RevenueAtRisk.business_id == business_id,
-                    RevenueAtRisk.entity_type == "PAYMENT",
-                    RevenueAtRisk.entity_id.in_(payment_ids),
+                    RevenueAtRisk.entity_type == "INVOICE",
+                    RevenueAtRisk.entity_id.in_(invoice_ids),
                 )
             ).all()
             for entity_id, at_risk_id, detected_at in ar_rows:
@@ -250,25 +413,232 @@ def get_transactions(limit: int = 200) -> list[dict]:
                 if current is None or detected_at > current[1]:
                     latest_at_risk[entity_id] = (at_risk_id, detected_at)
 
-        return [
-            {
-                "payment_id": str(p.payment_id),
-                "payment_intent_id": p.payment_intent_id,
-                "attempt_number": p.attempt_number,
+        score_by_at_risk: dict[uuid.UUID, float] = {}
+        at_risk_ids = [v[0] for v in latest_at_risk.values()]
+        if at_risk_ids:
+            score_rows = session.execute(
+                select(CustomerRecoveryProfile.at_risk_id, CustomerRecoveryProfile.predicted_score).where(
+                    CustomerRecoveryProfile.business_id == business_id,
+                    CustomerRecoveryProfile.at_risk_id.in_(at_risk_ids),
+                )
+            ).all()
+            score_by_at_risk = dict(score_rows)
+
+        now = datetime.now(timezone.utc)
+        result = []
+        for inv, email, name in rows:
+            at_risk_id = latest_at_risk[inv.invoice_id][0] if inv.invoice_id in latest_at_risk else None
+            score = score_by_at_risk.get(at_risk_id) if at_risk_id else None
+            days_overdue = max((now - inv.due_at).total_seconds() / 86400, 0.0) if inv.status != "PAID" else 0.0
+            result.append({
+                "invoice_id": str(inv.invoice_id),
                 "customer_email": email,
-                "amount_minor": p.amount_minor,
-                "currency": p.currency,
-                "status": p.payment_status,
-                "method": p.payment_method,
-                "failure_reason": p.failure_code_canonical,
-                "issuer_bank": p.issuer_bank,
-                "initiated_at": p.initiated_at.isoformat() if p.initiated_at else None,
-                "at_risk_id": str(latest_at_risk[p.payment_id][0]) if p.payment_id in latest_at_risk else None,
-            }
-            for p, email in rows
-        ]
+                "customer_name": name,
+                "amount_minor": inv.amount_minor,
+                "amount_paid_minor": inv.amount_paid_minor,
+                "currency": inv.currency,
+                "status": inv.status,
+                "dunning_stage": inv.dunning_stage,
+                "days_overdue": round(days_overdue, 1),
+                "due_at": inv.due_at.isoformat() if inv.due_at else None,
+                "at_risk_id": str(at_risk_id) if at_risk_id else None,
+                "recovery_likelihood": _likelihood_label(score),
+            })
+        return result
     finally:
         session.close()
+
+
+_SEGMENT_LABELS = {
+    "new": "New customers", "casual": "Casual customers", "regular": "Regular customers", "loyal": "Loyal customers",
+    "micro": "Micro businesses", "sme": "Small/medium businesses", "mid": "Mid-size businesses", "enterprise": "Enterprise accounts",
+}
+
+
+def get_predictions(customer_type: str | None = None) -> dict:
+    """Plain-language summary of what the recovery-likelihood model is
+    saying about the current batch of at-risk payments -- feeds the
+    dashboard's Recovery Predictions panel (charts, not raw scores).
+    Optionally scoped to one customer_type, reused by the B2C/B2B tabs.
+    """
+    business_id = _business_id()
+    session = SessionLocal()
+    try:
+        query = select(
+            CustomerRecoveryProfile.predicted_score,
+            CustomerRecoveryProfile.score_version,
+            CustomerRecoveryProfile.features,
+        ).where(CustomerRecoveryProfile.business_id == business_id)
+        if customer_type is not None:
+            query = query.join(Customer, Customer.customer_id == CustomerRecoveryProfile.customer_id).where(
+                Customer.customer_type == customer_type
+            )
+        rows = session.execute(query).all()
+    finally:
+        session.close()
+
+    if not rows:
+        return {"scored_count": 0}
+
+    n = len(rows)
+    avg_score = sum(r[0] for r in rows) / n
+    version = rows[0][1]
+
+    buckets = {"high": 0, "medium": 0, "low": 0}
+    for score, _version, _features in rows:
+        buckets[_likelihood_label(score)] += 1
+
+    seg_scores: dict[str, list[float]] = defaultdict(list)
+    for score, _version, features in rows:
+        seg = (features or {}).get("segment")
+        if seg:
+            seg_scores[seg].append(score)
+    segments = sorted(
+        (
+            {"label": _SEGMENT_LABELS.get(seg, seg.title()), "avg_score": round(sum(v) / len(v), 3), "count": len(v)}
+            for seg, v in seg_scores.items()
+        ),
+        key=lambda x: -x["avg_score"],
+    )[:8]
+
+    return {
+        "scored_count": n,
+        "avg_score": round(avg_score, 3),
+        "buckets": buckets,
+        "model_label": "Trained AI model" if version == "score_ml@v1" else "Statistical model",
+        "segments": segments,
+    }
+
+
+def _customer_type_summary(*, customer_type: str, entity_types: tuple[str, ...]) -> dict:
+    business_id = _business_id()
+    session = SessionLocal()
+    try:
+        rows = session.execute(
+            select(RevenueAtRisk.at_risk_id, RevenueAtRisk.at_risk_minor, Customer.customer_segment)
+            .join(Customer, Customer.customer_id == RevenueAtRisk.customer_id)
+            .where(
+                RevenueAtRisk.business_id == business_id,
+                RevenueAtRisk.entity_type.in_(entity_types),
+                Customer.customer_type == customer_type,
+            )
+        ).all()
+
+        at_risk_ids = [at_risk_id for at_risk_id, _, _ in rows]
+        recovered_minor = 0
+        recovered_count = 0
+        if at_risk_ids:
+            for _at_risk_id, outcome, recovered in session.execute(
+                select(RecoveryOutcome.at_risk_id, RecoveryOutcome.outcome, RecoveryOutcome.recovered_minor).where(
+                    RecoveryOutcome.at_risk_id.in_(at_risk_ids)
+                )
+            ).all():
+                if outcome == "RECOVERED":
+                    recovered_count += 1
+                    recovered_minor += recovered
+    finally:
+        session.close()
+
+    at_risk_minor = sum(minor for _, minor, _ in rows)
+    segment_totals: dict[str, int] = defaultdict(int)
+    for _at_risk_id, minor, segment in rows:
+        segment_totals[segment or "unknown"] += minor
+    segments = sorted(
+        (
+            {"label": _SEGMENT_LABELS.get(seg, seg.title()) if seg != "unknown" else "Unknown", "at_risk_minor": total}
+            for seg, total in segment_totals.items()
+        ),
+        key=lambda x: -x["at_risk_minor"],
+    )
+
+    return {
+        "count": len(rows),
+        "at_risk_minor": at_risk_minor,
+        "recovered_minor": recovered_minor,
+        "recovered_count": recovered_count,
+        "recovery_rate_pct": round(recovered_count / len(rows) * 100, 1) if rows else 0.0,
+        "segments": segments,
+    }
+
+
+_DAYS_OVERDUE_BUCKETS = [("0-15", 0, 15), ("16-30", 16, 30), ("31-45", 31, 45), ("46+", 46, None)]
+
+
+def _days_overdue_buckets() -> list[dict]:
+    business_id = _business_id()
+    session = SessionLocal()
+    try:
+        rows = session.execute(
+            select(Invoice.due_at)
+            .join(Customer, Customer.customer_id == Invoice.customer_id)
+            .where(Invoice.business_id == business_id, Customer.customer_type == "B2B", Invoice.status != "PAID")
+        ).all()
+    finally:
+        session.close()
+
+    now = datetime.now(timezone.utc)
+    buckets = {label: 0 for label, _, _ in _DAYS_OVERDUE_BUCKETS}
+    for (due_at,) in rows:
+        days = max((now - due_at).total_seconds() / 86400, 0.0)
+        for label, lo, hi in _DAYS_OVERDUE_BUCKETS:
+            if days >= lo and (hi is None or days <= hi):
+                buckets[label] += 1
+                break
+    return [{"label": label, "count": buckets[label]} for label, _, _ in _DAYS_OVERDUE_BUCKETS]
+
+
+def get_b2c_summary() -> dict:
+    return _customer_type_summary(customer_type="B2C", entity_types=("PAYMENT", "CHECKOUT"))
+
+
+def get_b2b_summary() -> dict:
+    summary = _customer_type_summary(customer_type="B2B", entity_types=("INVOICE", "SUBSCRIPTION"))
+    summary["days_overdue_buckets"] = _days_overdue_buckets()
+    return summary
+
+
+def get_human_review_queue() -> dict:
+    """Pooled B2C+B2B queue behind the Human Review tab, ranked by
+
+    recovery likelihood alone -- see app/recovery/human_review.py for the
+    one shared definition of "awaiting human" this wraps.
+    """
+    from app.recovery import human_review
+
+    business_id = _business_id()
+    session = SessionLocal()
+    try:
+        items = human_review.human_review_queue(session, business_id)
+    finally:
+        session.close()
+
+    count = len(items)
+    total_at_risk_minor = sum(item["value_minor"] for item in items)
+    avg_score = (sum(item["predicted_score"] for item in items) / count) if count else 0.0
+    by_reason: dict[str, int] = defaultdict(int)
+    for item in items:
+        by_reason[item["reason"]] += 1
+
+    return {
+        "count": count,
+        "total_at_risk_minor": total_at_risk_minor,
+        "avg_score": round(avg_score, 3),
+        "by_reason": dict(by_reason),
+        "items": [
+            {
+                "at_risk_id": str(item["at_risk_id"]),
+                "customer_id": str(item["customer_id"]) if item["customer_id"] else None,
+                "customer_type": item["customer_type"],
+                "entity_type": item["entity_type"],
+                "value_minor": item["value_minor"],
+                "currency": item["currency"],
+                "predicted_score": item["predicted_score"],
+                "reason": item["reason"],
+                "decided_at": item["decided_at"].isoformat() if item["decided_at"] else None,
+            }
+            for item in items
+        ],
+    }
 
 
 def explain_batch(batch_id: str) -> dict:
@@ -358,7 +728,6 @@ def explain_batch_groups(batch_id: str) -> dict:
     one business.
     """
     from app.explain import _inr, render_narrative
-    from app.models import RecoveryAttempt, RecoveryBatch, RecoveryOutcome, RevenueAtRisk
 
     business_id = _business_id()
     session = SessionLocal()

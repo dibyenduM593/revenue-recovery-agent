@@ -27,6 +27,8 @@ from app.canonical.vocabulary import EventType, MandateStatus, NormalizationStag
 from app.models import CheckoutSession, Customer, Dispute, Invoice, Order, Payment, RevenueEvent, SourceMapping, Subscription
 from app.normalize.semantic import SemanticResult
 from app.normalize.structural import NormalizationError
+from seed.generator import customer_profile_for
+from seed.reference import DEMO_SEED
 
 # uuid4() (crypto-random) for every internal id was the actual root cause
 # behind Day 12's determinism check failing: two runs from an identical
@@ -51,12 +53,18 @@ def _get_or_create_customer(session: Session, business_id: uuid.UUID, email: str
     email_normalized = email.strip().lower() if email else None
     now = datetime.now(timezone.utc)
     candidate_id = _deterministic_id(str(business_id), "customer", email_normalized or phone or "")
+    # Same (email, DEMO_SEED) key app/scoring/features.py already recomputes
+    # from on every read, persisted here so a stored value and any future
+    # recompute can never disagree.
+    profile = customer_profile_for(email, DEMO_SEED) if email else None
     insert_stmt = pg_insert(Customer).values(
         customer_id=candidate_id,
         business_id=business_id,
         email=email,
         email_normalized=email_normalized,
         phone_e164=phone,
+        customer_type=profile.customer_type if profile else None,
+        customer_segment=profile.segment if profile else None,
         created_at=now,
         updated_at=now,
     )

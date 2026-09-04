@@ -20,13 +20,13 @@ import io
 import json
 import random
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.api import app
-from app.canonical.vocabulary import Action
+from app.canonical.attribution_keys import provider_id_from
 from app.db import SessionLocal
 from app.models import Customer, Payment, RecoveryAttempt, RevenueAtRisk, SourceMapping
 from seed.generator import GeneratorConfig, business_id_for, latent_propensity
@@ -190,14 +190,28 @@ def simulate(session, business_id: uuid.UUID, *, seed: int) -> dict:
         if rng.random() >= p_recover:
             continue
 
-        window_start = attempt.decided_at
+        # executed_at, not decided_at, when a message actually went out --
+        # since the outbound queue, a customer can't respond to something
+        # before it was actually sent, and decided_at can now be well
+        # before that if the queue was backed up. Falls back to decided_at
+        # for un-executed (holdout/suppressed) rows, where it's still the
+        # only sensible anchor for the organic-recovery observation window.
+        window_start = attempt.executed_at or attempt.decided_at
         window_end = attempt.attribution_expires_at
         span = max((window_end - window_start).total_seconds(), 60)
         recovered_at = window_start + timedelta(seconds=rng.uniform(span * 0.05, span * 0.85))
         recovery_token = attempt.recovery_token  # None for holdout/suppressed -- correctly forces WEAK inference only
 
         if at_risk.entity_type == "PAYMENT":
-            payment_intent_id = attempt.attribution_key_value if attempt.attribution_key_type == "PAYMENT_INTENT" else None
+            # The provider half of the composite key, never the whole
+            # string: this used to read attribution_key_value raw, which
+            # is a UUID, and emitted success events carrying an order_id
+            # no provider ever issued -- so attribution never matched them.
+            payment_intent_id = (
+                provider_id_from(attempt.attribution_key_value)
+                if attempt.attribution_key_type == "PAYMENT_INTENT"
+                else None
+            )
             if payment_intent_id is None:
                 # TOKEN-attributed: need the payment_intent_id, not the token, to build order_id
                 payment = session.get(Payment, at_risk.entity_id)

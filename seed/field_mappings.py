@@ -38,6 +38,7 @@ RAZORPAY_MAPPINGS = [
     ("payment", "payload.payment.entity.amount", "amount_minor", "identity"),
     ("payment", "payload.payment.entity.currency", "currency", "identity"),
     ("payment", "payload.payment.entity.status", "status_raw", "identity"),
+    ("payment", "payload.payment.entity.method", "payment_method", "identity"),
     ("payment", "payload.payment.entity.email", "customer_email", "identity"),
     ("payment", "payload.payment.entity.contact", "customer_phone", "identity"),
     ("payment", "payload.payment.entity.error_reason", "failure_code_raw", "identity"),

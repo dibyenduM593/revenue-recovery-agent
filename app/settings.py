@@ -47,6 +47,24 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
 SMTP_FROM = os.environ.get("SMTP_FROM")
 DEMO_RECIPIENT_EMAIL = os.environ.get("DEMO_RECIPIENT_EMAIL")
 
+# Live voice/WhatsApp channel. Unset by default -- the dispatch worker
+# falls back to SimulatedProvider (same fail-closed discipline as
+# EmailChannel) rather than a crash when these aren't configured.
+# TWILIO_ALLOWLIST is a comma-separated list of E.164 numbers -- the ONLY
+# numbers ever handed to the real Twilio API. Everything else, regardless
+# of provider column, routes to the simulated sender. This exists because
+# a Twilio trial account hard-rejects any number that isn't verified in
+# the console, and because a public form must never be able to place a
+# real call to a number nobody consented to receiving one.
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+TWILIO_VOICE_NUMBER = os.environ.get("TWILIO_VOICE_NUMBER")
+TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER")  # e.g. "whatsapp:+14155238886" (sandbox)
+TWILIO_WHATSAPP_JOIN_PHRASE = os.environ.get("TWILIO_WHATSAPP_JOIN_PHRASE")
+TWILIO_ALLOWLIST = frozenset(
+    n.strip() for n in os.environ.get("TWILIO_ALLOWLIST", "").split(",") if n.strip()
+)
+
 # Day 11: explainability. Unset by default -- explain.py fails closed to a
 # deterministic template narrative (never fabricates, never blocks the demo)
 # rather than skipping explanation entirely when no key is configured.

@@ -39,10 +39,109 @@ NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "revenue-recovery.internal")
 ID_ALPHABET = string.ascii_letters + string.digits
 
 
-def latent_propensity(email: str, seed: int) -> float:
-    """Deterministic pseudo-random recovery propensity in [0, 1) for one customer."""
-    digest = hashlib.sha256(f"{seed}:{email}".encode()).hexdigest()
+def _hash01(key: str) -> float:
+    digest = hashlib.sha256(key.encode()).hexdigest()
     return int(digest[:8], 16) / 0xFFFFFFFF
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _weighted_pick(items: list[str], weights: list[float], u: float) -> str:
+    """Turn a uniform [0,1) draw into a categorical choice, deterministically."""
+    total = sum(weights)
+    acc = 0.0
+    threshold = u * total
+    for item, weight in zip(items, weights):
+        acc += weight
+        if threshold < acc:
+            return item
+    return items[-1]
+
+
+# 7 archetypes: structured shape of a customer's behavioural history, not a
+# per-customer coin flip. Weights sum to 1.0.
+ARCHETYPES = ["reliable", "stable_late", "seasonal", "gradual_decliner",
+              "sudden_shock", "volatile", "recovering"]
+ARCHETYPE_WEIGHTS = [0.30, 0.15, 0.15, 0.12, 0.10, 0.10, 0.08]
+ARCHETYPE_BASE: dict[str, float] = {
+    "reliable": 0.75,
+    "stable_late": 0.55,
+    "seasonal": 0.50,
+    "gradual_decliner": 0.35,
+    "sudden_shock": 0.30,
+    "volatile": 0.40,
+    "recovering": 0.60,
+}
+
+B2C_SEGMENTS = ["new", "casual", "regular", "loyal"]
+B2C_SEGMENT_WEIGHTS = [0.30, 0.30, 0.25, 0.15]
+B2B_SEGMENTS = ["micro", "sme", "mid", "enterprise"]
+B2B_SEGMENT_WEIGHTS = [0.35, 0.35, 0.20, 0.10]
+# SME is evidenced far worse than the other B2B segments -- everything else
+# clusters close to 1.0.
+SEGMENT_MULT: dict[str, float] = {
+    "new": 0.85, "casual": 0.95, "regular": 1.05, "loyal": 1.20,
+    "micro": 0.80, "sme": 0.55, "mid": 1.00, "enterprise": 1.20,
+}
+
+SECTORS = ["retail", "saas", "services", "logistics", "healthcare", "education"]
+SECTOR_WEIGHTS = [0.30, 0.15, 0.20, 0.15, 0.10, 0.10]
+SECTOR_MULT: dict[str, float] = {
+    "retail": 1.00, "saas": 1.10, "services": 0.95,
+    "logistics": 0.90, "healthcare": 1.05, "education": 1.00,
+}
+
+BUSINESS_MODELS = ["product", "service"]
+BUSINESS_MODEL_WEIGHTS = [0.60, 0.40]
+BUSINESS_MODEL_MULT: dict[str, float] = {"product": 1.00, "service": 0.95}
+
+CUSTOMER_TYPE_B2C_RATE = 0.70
+
+
+@dataclass(frozen=True)
+class CustomerProfile:
+    customer_type: str
+    segment: str
+    sector: str
+    business_model: str
+    archetype: str
+
+
+def customer_profile_for(email: str, seed: int) -> CustomerProfile:
+    """Deterministic function of (email, seed) -- recomputable anywhere
+    (training export, runtime scoring) without ever having been written
+    into a raw provider payload, same discipline as latent_propensity().
+    """
+    customer_type = "B2C" if _hash01(f"{seed}:{email}:type") < CUSTOMER_TYPE_B2C_RATE else "B2B"
+    if customer_type == "B2C":
+        segment = _weighted_pick(B2C_SEGMENTS, B2C_SEGMENT_WEIGHTS, _hash01(f"{seed}:{email}:segment"))
+    else:
+        segment = _weighted_pick(B2B_SEGMENTS, B2B_SEGMENT_WEIGHTS, _hash01(f"{seed}:{email}:segment"))
+    sector = _weighted_pick(SECTORS, SECTOR_WEIGHTS, _hash01(f"{seed}:{email}:sector"))
+    business_model = _weighted_pick(BUSINESS_MODELS, BUSINESS_MODEL_WEIGHTS, _hash01(f"{seed}:{email}:model"))
+    archetype = _weighted_pick(ARCHETYPES, ARCHETYPE_WEIGHTS, _hash01(f"{seed}:{email}:archetype"))
+    return CustomerProfile(customer_type, segment, sector, business_model, archetype)
+
+
+def latent_propensity(email: str, seed: int) -> float:
+    """Deterministic recovery propensity in [0, 1) for one customer.
+
+    Decomposed into a structured component (archetype x segment x sector x
+    business_model -- all observable) and a hidden component (the "life
+    circumstance" v3 SS3 wants unlearnable). A hash of the email alone has
+    zero mutual information with any observable feature; training a model
+    against that would learn nothing but action_fit/timing_fit and call it
+    a score. The hidden term stays, but as ~40% of the total, not all of it.
+    """
+    profile = customer_profile_for(email, seed)
+    base = ARCHETYPE_BASE[profile.archetype]
+    base *= SEGMENT_MULT[profile.segment]
+    base *= SECTOR_MULT[profile.sector]
+    base *= BUSINESS_MODEL_MULT[profile.business_model]
+    hidden = _hash01(f"{seed}:{email}:hidden")
+    return _clamp(base * (0.75 + 0.5 * hidden), 0.02, 0.95)
 
 
 def _rand_id(rng: random.Random, prefix: str, length: int = 14) -> str:
@@ -193,31 +292,72 @@ class GeneratorConfig:
     duplicate_delivery_rate: float = 0.03
 
 
+# n_transactions distribution (both B2C and B2B): a long head of one-shot
+# customers, a long tail where behavioural features (rolling_late_rate,
+# tenure) become computable at all.
+TRANSACTION_COUNT_BUCKETS = [(1, 1), (2, 4), (5, 9), (10, 15)]
+TRANSACTION_COUNT_WEIGHTS = [0.55, 0.30, 0.11, 0.04]
+
+
 @dataclass
 class Customer:
     index: int
     email: str
     name: str
     phone: str
+    customer_type: str       # 'B2C' | 'B2B'
+    segment: str
+    sector: str
+    business_model: str      # 'product' | 'service'
+    archetype: str
+    fixed_amount_minor: int  # drawn once per customer, reused across transactions
+    amount_volatility: float # 0.0 for product, jittered for service
+    n_transactions: int
 
 
 def business_id_for(cfg: GeneratorConfig) -> uuid.UUID:
     return uuid.uuid5(NAMESPACE, f"{cfg.seed}:business")
 
 
+def _n_transactions(rng: random.Random) -> int:
+    lo, hi = rng.choices(TRANSACTION_COUNT_BUCKETS, weights=TRANSACTION_COUNT_WEIGHTS, k=1)[0]
+    return rng.randint(lo, hi)
+
+
 def _make_customers(cfg: GeneratorConfig, rng: random.Random) -> list[Customer]:
     customers = []
     for i in range(cfg.n_customers):
         email = f"customer{i:05d}@example.com"
+        # profile is keyed off cfg.seed (the stable business-identity seed),
+        # matching latent_propensity()'s own key, not content_seed -- so a
+        # customer's demographics don't shuffle across dashboard reruns.
+        profile = customer_profile_for(email, cfg.seed)
+        fixed_amount_minor = _amount(cfg, rng)
+        amount_volatility = 0.0 if profile.business_model == "product" else rng.uniform(0.10, 0.35)
         customers.append(
             Customer(
                 index=i,
                 email=email,
                 name=f"Customer {i:05d}",
                 phone=f"+9198{rng.randint(10_000_000, 99_999_999)}",
+                customer_type=profile.customer_type,
+                segment=profile.segment,
+                sector=profile.sector,
+                business_model=profile.business_model,
+                archetype=profile.archetype,
+                fixed_amount_minor=fixed_amount_minor,
+                amount_volatility=amount_volatility,
+                n_transactions=_n_transactions(rng),
             )
         )
     return customers
+
+
+def _customer_amount(cfg: GeneratorConfig, rng: random.Random, customer: Customer) -> int:
+    if customer.amount_volatility == 0.0:
+        return customer.fixed_amount_minor
+    jittered = customer.fixed_amount_minor * rng.gauss(1.0, customer.amount_volatility)
+    return max(round(jittered, -2), cfg.min_amount_minor)
 
 
 def _pick_failure(cfg: GeneratorConfig, rng: random.Random) -> FailureCode:
@@ -349,10 +489,17 @@ def _generate_payment_intents(cfg: GeneratorConfig, rng: random.Random,
                                                         entity["currency"], dispute_time, respond_by)),
                               f"evt_{dispute_id}"))
 
-    for i in range(cfg.n_payment_intents):
-        customer = rng.choice(customers)
+    # Inverted from the old rng.choice(customers)-per-intent loop: iterate
+    # customers, emit each one's full n_transactions. That is the only way
+    # repeats are real rather than accidental Poisson noise, and it means
+    # cfg.n_payment_intents no longer sizes this loop directly -- volume is
+    # controlled via cfg.n_customers and the repeat distribution instead.
+    intents = [(customer, txn) for customer in customers for txn in range(customer.n_transactions)]
+    rng.shuffle(intents)
+
+    for customer, _txn in intents:
         order_id = _rand_id(rng, "order")
-        amount = _amount(cfg, rng)
+        amount = _customer_amount(cfg, rng, customer)
         t = _random_time(cfg, rng, start)
 
         order_created_at = t - timedelta(minutes=rng.uniform(2, 45))
@@ -401,6 +548,8 @@ def _generate_payment_intents(cfg: GeneratorConfig, rng: random.Random,
 def _generate_checkouts(cfg: GeneratorConfig, rng: random.Random,
                          customers: list[Customer], business_id: uuid.UUID,
                          start: datetime) -> list[dict]:
+    if not customers:
+        return []
     events: list[dict] = []
     for i in range(cfg.n_checkouts):
         customer = rng.choice(customers)
@@ -437,6 +586,8 @@ def _generate_checkouts(cfg: GeneratorConfig, rng: random.Random,
 def _generate_invoices(cfg: GeneratorConfig, rng: random.Random,
                         customers: list[Customer], business_id: uuid.UUID,
                         start: datetime) -> list[dict]:
+    if not customers:
+        return []
     events: list[dict] = []
     for i in range(cfg.n_invoices):
         customer = rng.choice(customers)
@@ -552,10 +703,19 @@ def generate_dataset(cfg: GeneratorConfig) -> list[dict]:
     start = cfg.anchor - timedelta(days=cfg.days)
     customers = _make_customers(cfg, rng)
 
-    payment_events, successes = _generate_payment_intents(cfg, rng, customers, business_id, start)
-    checkout_events = _generate_checkouts(cfg, rng, customers, business_id, start)
-    invoice_events = _generate_invoices(cfg, rng, customers, business_id, start)
-    subscription_events = _generate_subscriptions(cfg, rng, customers, business_id, start)
+    # PAYMENT/CHECKOUT are Razorpay's B2C-facing products (Checkout, Payment
+    # Gateway); INVOICE/SUBSCRIPTION are its B2B recurring-billing products.
+    # Partitioning here is what makes customer_type an enforced fact instead
+    # of an independent coin-flip unrelated to which events a customer gets
+    # -- see build_features()'s own B2C_FEATURES/B2B_FEATURES split, which
+    # this now actually matches.
+    b2c_customers = [c for c in customers if c.customer_type == "B2C"]
+    b2b_customers = [c for c in customers if c.customer_type == "B2B"]
+
+    payment_events, successes = _generate_payment_intents(cfg, rng, b2c_customers, business_id, start)
+    checkout_events = _generate_checkouts(cfg, rng, b2c_customers, business_id, start)
+    invoice_events = _generate_invoices(cfg, rng, b2b_customers, business_id, start)
+    subscription_events = _generate_subscriptions(cfg, rng, b2b_customers, business_id, start)
     refund_events = _generate_refunds(cfg, rng, successes, business_id)
 
     events = payment_events + checkout_events + invoice_events + subscription_events + refund_events

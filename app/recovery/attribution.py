@@ -23,6 +23,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.canonical.attribution_keys import provider_id_from
 from app.models import Payment, RecoveryAttempt, RecoveryOutcome, RevenueAtRisk, RevenueEvent
 
 
@@ -149,35 +150,51 @@ def run_attribution(session: Session, business_id: uuid.UUID, *, clock: Optional
         if already is not None:
             continue
 
-        attempt = (
+        attempts = (
             session.execute(
                 select(RecoveryAttempt)
                 .where(RecoveryAttempt.at_risk_id == at_risk.at_risk_id)
                 .order_by(RecoveryAttempt.attempt_number.desc())
-                .limit(1)
             )
             .scalars()
-            .first()
+            .all()
         )
-        if attempt is None:
+        if not attempts:
             stats["still_open"] += 1
             continue
+        attempt = attempts[0]  # latest, used for the window and for event-attributed fallback matching below
 
         start, end = attempt.decided_at, attempt.attribution_expires_at
         match_event: Optional[RevenueEvent] = None
         method = _METHOD_FOR_ENTITY.get(at_risk.entity_type, "PAYMENT_INTENT_MATCH")
         confidence = "WEAK"
 
-        if attempt.recovery_token:
-            match_event = _find_by_token(session, business_id, attempt.recovery_token)
+        # Check EVERY attempt's own token, not just the latest one. A
+        # fan-out (e.g. a live-demo VOICE + WHATSAPP pair) puts the nudge
+        # token on only ONE of two attempts sharing an at_risk_id, and that
+        # one is not always the higher attempt_number -- checking only
+        # "the latest" would silently drop a real click's evidence whenever
+        # a channel-less follow-up (or the other fan-out leg) attempt
+        # number happens to be newer.
+        for candidate in attempts:
+            if not candidate.recovery_token:
+                continue
+            match_event = _find_by_token(session, business_id, candidate.recovery_token)
             if match_event is not None:
-                method, confidence = "TOKEN_CLICK", "STRONG"
+                method, confidence, attempt = "TOKEN_CLICK", "STRONG", candidate
+                break
 
         if match_event is None:
             if at_risk.entity_type == "PAYMENT":
-                payment = session.get(Payment, at_risk.entity_id)
-                if payment is not None:
-                    match_event = _find_payment_intent_match(session, business_id, payment.payment_intent_id, start, end)
+                # Provider intent id off the composite key when the attempt
+                # carries one; rows written before the key became composite
+                # fall back to the lookup that has always been here.
+                payment_intent_id = provider_id_from(attempt.attribution_key_value)
+                if payment_intent_id is None:
+                    payment = session.get(Payment, at_risk.entity_id)
+                    payment_intent_id = payment.payment_intent_id if payment is not None else None
+                if payment_intent_id is not None:
+                    match_event = _find_payment_intent_match(session, business_id, payment_intent_id, start, end)
                     if match_event is not None:
                         confidence = "STRONG"  # tight window (30min-24h): a coincidental match here is implausible
             elif at_risk.entity_type == "CHECKOUT":
@@ -227,12 +244,23 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Match recovery signals back to at-risk records and attempts.")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--clock", type=str, default=None,
+        help="ISO8601 moment to evaluate windows AS OF. Defaults to the newest event in the data, "
+             "which is the right choice for a time-compressed replay but can never exceed a still-open "
+             "window: simulate_world places recoveries at most 0.85 of the way through a window, so the "
+             "derived clock always lands BEFORE the window closes and long-window items (90-day "
+             "invoices) can never expire. A corpus run needs those negatives, so it passes the real "
+             "evaluation moment here.",
+    )
     args = parser.parse_args()
+
+    clock = datetime.fromisoformat(args.clock) if args.clock else None
 
     business_id = business_id_for(GeneratorConfig(seed=args.seed))
     session = SessionLocal()
     try:
-        stats = run_attribution(session, business_id)
+        stats = run_attribution(session, business_id, clock=clock)
         session.commit()
     finally:
         session.close()

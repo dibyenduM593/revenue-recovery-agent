@@ -26,7 +26,7 @@ import hmac
 import io
 import json
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
@@ -202,6 +202,13 @@ def main() -> None:
     )
     parser.add_argument("--customers", type=int, default=800)
     parser.add_argument("--days", type=int, default=30)
+    parser.add_argument(
+        "--anchor", type=str, default=None,
+        help="ISO8601 date the generated window ENDS at (default 2026-08-25). A corpus run moves this "
+             "back so that a batch decided just after the window has had its full 90-day invoice "
+             "attribution window elapse by real today -- otherwise unrecovered invoices never expire "
+             "and only the recovered ones reach the training corpus.",
+    )
     # Event VOLUME is driven by these, not --customers -- GeneratorConfig's
     # defaults are fixed counts regardless of customer count. Exposed so a
     # caller wanting a fast interactive run (the dashboard's orchestrator)
@@ -209,6 +216,9 @@ def main() -> None:
     parser.add_argument("--payment-intents", type=int, default=400)
     parser.add_argument("--checkouts", type=int, default=150)
     parser.add_argument("--invoices", type=int, default=80)
+    parser.add_argument("--invoice-overdue-rate", type=float, default=None,
+                         help="Overrides GeneratorConfig.invoice_overdue_rate (default 0.30) -- "
+                              "the training profile wants it raised to ~0.35 for B2B label balance.")
     parser.add_argument("--subscriptions", type=int, default=60)
     parser.add_argument("--drain", action="store_true", default=True)
     parser.add_argument("--no-drain", dest="drain", action="store_false")
@@ -216,11 +226,16 @@ def main() -> None:
     parser.add_argument("--no-contactability", dest="contactability", action="store_false")
     args = parser.parse_args()
 
-    cfg = GeneratorConfig(
+    cfg_kwargs = dict(
         seed=args.seed, content_seed=args.content_seed, n_customers=args.customers, days=args.days,
         n_payment_intents=args.payment_intents, n_checkouts=args.checkouts,
         n_invoices=args.invoices, n_subscriptions=args.subscriptions,
     )
+    if args.invoice_overdue_rate is not None:
+        cfg_kwargs["invoice_overdue_rate"] = args.invoice_overdue_rate
+    if args.anchor is not None:
+        cfg_kwargs["anchor"] = datetime.fromisoformat(args.anchor)
+    cfg = GeneratorConfig(**cfg_kwargs)
     rng = random.Random((cfg.content_seed if cfg.content_seed is not None else cfg.seed) ^ 0xC0DE)
 
     events = generate_dataset(cfg)

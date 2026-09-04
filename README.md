@@ -184,19 +184,127 @@ failed check all land on the same deterministic template -- the LLM can
 make the demo's prose nicer; it can never make a number in the ledger
 wrong, and it can never block the demo from running.
 
+## Outbound dispatch queue (Day 13)
+
+`execute_action()` used to call a provider inline, synchronously, inside
+the batch loop. It no longer does. A channel-bearing action (NUDGE /
+REQUEST_NEW_INSTRUMENT / RECOLLECT_MANDATE) now writes one row to
+`outbound_dispatches` and returns; `app/dispatch_worker.py` drains that
+table separately -- `FOR UPDATE SKIP LOCKED`, highest
+`predicted_score * at_risk_minor` first, the exact ranking
+`app/recovery/batch.py` already used to decide which candidates survive
+`max_entities_per_batch`, reused rather than invented a second time. Under
+a provider rate limit this is the literal claim: the customer we think
+we can actually save gets the scarce send slot before the one who
+probably won't come back regardless.
+
+`recovery_attempts` gained a second timestamp for this: `enqueued_at`
+(authorized, written to the queue) and `executed_at` (a provider actually
+accepted it). They were the same instant when dispatch was synchronous;
+behind a queue they aren't, and the gap between them is where the worker
+does something decision time couldn't -- it re-checks every time-and-
+consent-sensitive bound (H1/H5/H7/H8/H9/H10, plus `EMERGENCY_STOP` and
+the business's own kill switches) against the *current* clock immediately
+before calling a provider. An item authorized at 20:55 does not go out at
+21:05 if quiet hours started at 21:00, which cannot be guaranteed while
+authorization and sending were the same instant. The worker also
+enforces `policy_bounds.max_sends_per_hour`, a column that existed and
+was faithfully snapshotted into every audit row but was never actually
+checked by anything before this queue existed.
+
+`RETRY_NOW` / `RETRY_SCHEDULED` / `OPS_ALERT` never touch a customer
+channel (no live Razorpay charge API in this build, same Day 6 gap) and
+still resolve synchronously, unchanged -- only real customer-facing sends
+go through the queue.
+
+**Two channels, one decision, one nudge -- and the call is structurally
+unable to be credited with a recovery.** A live-demo call fires VOICE and
+WHATSAPP together from a single `execute_action()` call
+(`app.bounds.FanOutLeg`), sharing one minted token so both messages can
+reference the same link. Only the WhatsApp leg's `recovery_attempts` row
+is allowed to carry that token in its own `recovery_token` column --
+`app/recovery/attribution.py` credits a recovery by an attempt's *own*
+token, so the VOICE attempt is attribution-ineligible by foreign key, not
+by convention. Its `outbound_dispatches` row still carries the same
+token (so the call is traceable to the nudge it refers to); the
+`recovery_attempts` row it owns just never can be.
+
+**Retries: up to 3 nudges per loss, about a day apart, resolved either
+way.** `app/recovery/nudge_retry.py` runs after attribution: if a nudge's
+attribution window closes with no match and fewer than 3 nudges have been
+sent for that loss, it fires another one (a fresh token, through
+`execute_action()` and every bound again); on the 3rd unconverted miss it
+writes `recovery_outcomes.outcome = 'NOT_RECOVERED'` -- a value the schema
+already declared but nothing wrote before this existed. If any retry
+converts, `run_attribution()` writes `RECOVERED` the normal way and the
+retry loop never runs again for that loss. "About a day apart" falls out
+for free from each nudge's own attribution window (24h-72h per
+`FAILURE_TAXONOMY`) -- no separate delay is coded in.
+
 ## What's simulated vs. real
 
 - **Real**: HMAC verification, the normalize pipeline, risk detection,
-  the H1-H10 bounds chokepoint, the holdout split, attribution, one email
-  channel (sends via SMTP if configured, fails closed otherwise).
+  the H1-H10 bounds chokepoint, the holdout split, attribution, the
+  outbound dispatch queue itself, one email channel (sends via SMTP if
+  configured, fails closed otherwise), and -- for exactly one allowlisted
+  phone number (see "Live demo" below) -- a real Twilio voice call and a
+  real Twilio WhatsApp message.
 - **Simulated, clearly labelled as such**: SMS/WhatsApp/voice delivery
-  (`SimulatedChannel`, no real DLT/Meta-registered sender), Razorpay
-  Payment Links (a placeholder URL shaped like one -- no live Razorpay API
-  credentials in this build), and the world simulator's customer response
-  model (`p_recover = clamp(base_propensity * action_fit * timing_fit *
-  channel_fit, 0, 0.95)`, `seed/simulate_world.py`).
+  for every number NOT on `TWILIO_ALLOWLIST` (`send_simulated()`, no real
+  DLT/Meta-registered sender), Razorpay Payment Links (a placeholder URL
+  shaped like one -- no live Razorpay API credentials in this build), and
+  the world simulator's customer response model (`p_recover =
+  clamp(base_propensity * action_fit * timing_fit * channel_fit, 0,
+  0.95)`, `seed/simulate_world.py`).
 - **Never built, Day 6 abandoned by design**: a real Razorpay webhook
   connection. See the Day 6 entry above.
+
+## Live demo (walk-up)
+
+`app/live_demo.py` plants one real phone number's failed payment into the
+real pipeline -- through `/v1/imports`, the same endpoint the synthetic
+corpus goes through, never a direct table write -- so normalization, risk
+detection and scoring all run for it exactly as they do for corpus data.
+`POST /dashboard/api/live-demo/plant` (phone number + a failure-reason
+dropdown), then `POST /dashboard/api/live-demo/launch` decides the action,
+fires the VOICE + WHATSAPP fan-out described above, and drains the queue
+before returning.
+
+**A number reaches Twilio's real API only if it's in `TWILIO_ALLOWLIST`.**
+`channels.provider_for()` is the one function that decides real-vs-
+simulated; everything else routes through it. For the demo this allowlist
+holds exactly one number, verified in the Twilio CLI ahead of time
+(`twilio phone-numbers:verify`) -- a trial account rejects any other
+number at the API layer regardless, so the allowlist is enforcing a rule
+Twilio would otherwise enforce as an error.
+
+**No money moves in this demo, and the WhatsApp message says so.** There
+is no live Razorpay Payment Link API in this build (the same Day 6 gap),
+so the WhatsApp text does not ask for payment -- it asks the recipient to
+reply **YES** or **NO**. A **YES** is ingested as a real
+`payment.captured` webhook payload carrying the nudge's token
+(`app.live_demo._yes_reply_event`), through the same `/v1/imports` →
+normalize → `run_attribution()` path any real recovery signal takes.
+`run_attribution()` matches it as `TOKEN_CLICK` / `STRONG` and writes
+`recovery_outcomes.outcome = 'RECOVERED'` for the full loss amount --
+exactly the same code path and the same confidence level a real payment
+link click would produce. **This is the one deliberate stand-in in the
+whole build: a real deployment swaps `_yes_reply_event()` for a Razorpay
+Payment Link webhook and changes nothing else** -- attribution, the
+report and every downstream number are unaffected by that swap, because
+the shape of what they consume (a captured payment carrying the token)
+is identical either way.
+
+A planted row shows up everywhere in the dashboard a real loss would --
+the transactions table, the KPI totals, the human-review queue if it gets
+there -- but `app/recovery/report.py` excludes it from the
+treatment/holdout cohort totals and the claimed lift number specifically
+(`live_demo_at_risk_ids()`, same mechanism as the awaiting-human
+exclusion). A walk-up demo customer is forced into the TREATMENT cohort
+rather than `assign_cohort()`'s hash (so a live trigger doesn't have a
+~20% chance of silently doing nothing on stage), which is exactly why it
+cannot be allowed anywhere near the measured statistic that cohort split
+exists to produce.
 
 ## Non-goals
 

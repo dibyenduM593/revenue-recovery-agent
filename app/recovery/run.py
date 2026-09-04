@@ -8,6 +8,7 @@ of only being decided and recorded.
 """
 
 import argparse
+from datetime import datetime
 
 from app.db import SessionLocal
 from app.models import Business
@@ -20,7 +21,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--enable", action="store_true", help="set recovery_enabled=True for this run")
     parser.add_argument("--live", action="store_true", help="also set dry_run=False (implies --enable)")
+    parser.add_argument(
+        "--now", type=str, default=None,
+        help="ISO8601 timestamp to decide this batch AT, instead of wall-clock now. Backdating it is "
+             "what lets a training-corpus run resolve labels: attribution only writes an outcome once "
+             "attribution_expires_at has elapsed, so attempts stamped 'now' leave every long-window "
+             "category (invoices, subscriptions, instrument updates) permanently unlabeled.",
+    )
     args = parser.parse_args()
+
+    now = datetime.fromisoformat(args.now) if args.now else None
 
     business_id = business_id_for(GeneratorConfig(seed=args.seed))
     session = SessionLocal()
@@ -32,7 +42,7 @@ def main() -> None:
                 business.dry_run = False
             session.commit()
 
-        batch = run_batch(session, business_id, seed=args.seed)
+        batch = run_batch(session, business_id, seed=args.seed, now=now)
         session.commit()
 
         print(f"batch {batch.batch_id}")

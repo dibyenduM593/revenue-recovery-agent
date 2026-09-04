@@ -11,6 +11,7 @@ from datetime import date, datetime, time
 
 from sqlalchemy import (
     CHAR,
+    REAL,
     SMALLINT,
     BigInteger,
     Boolean,
@@ -21,6 +22,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    PrimaryKeyConstraint,
     Text,
     Time,
     UniqueConstraint,
@@ -624,6 +626,11 @@ class RecoveryAttempt(Base):
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     consent_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
     bounds_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # enqueued_at: bounds cleared it and it was handed to the outbound queue.
+    # executed_at: a provider actually accepted it. These were the same
+    # instant while dispatch was synchronous; with a queue they are not, and
+    # everything that asks "was this customer contacted?" means executed_at.
+    enqueued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     suppressed_reason: Mapped[str | None] = mapped_column(Text)
     channel_receipt: Mapped[dict | None] = mapped_column(JSONB)
@@ -733,7 +740,102 @@ class OpsAlert(Base):
 
 
 # ---------------------------------------------------------------------
-# 8. Batch runs
+# 8. Scoring
+# ---------------------------------------------------------------------
+class CustomerRecoveryProfile(Base):
+    __tablename__ = "customer_recovery_profile"
+
+    business_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("businesses.business_id"), nullable=False)
+    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.customer_id"), nullable=False)
+    at_risk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("revenue_at_risk.at_risk_id"), nullable=False)
+    predicted_score: Mapped[float] = mapped_column(REAL, nullable=False)
+    score_version: Mapped[str] = mapped_column(Text, nullable=False)
+    features: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("business_id", "at_risk_id", name="customer_recovery_profile_pkey"),
+        Index("ix_customer_recovery_profile_customer", "business_id", "customer_id"),
+    )
+
+
+# ---------------------------------------------------------------------
+# 9. Outbound delivery queue
+# ---------------------------------------------------------------------
+class OutboundDispatch(Base):
+    """One row per message waiting to be handed to a provider.
+
+    The outbound mirror of raw_events: that table is the inbound work
+    queue app/worker.py drains, this is the outbound one
+    app/dispatch_worker.py drains, same claim-then-process shape.
+
+    A row's life ends when the PROVIDER ACCEPTS the message, never when
+    the customer responds -- an INVOICE attribution window runs 90 days
+    (bounds.INVOICE_ATTRIBUTION_WINDOW_SECONDS) and holding a queue row
+    open that long would be a permanent in-flight leak. Whether money
+    actually came back is recovery_outcomes' job, reached only through
+    the nudge (recovery_tokens), never through this table.
+
+    priority is predicted_score * at_risk_minor -- the same expected-loss
+    ordering app/recovery/batch.py already sorts candidates by, reused
+    rather than reinvented, so that under provider rate limits the
+    highest expected recovery drains first.
+    """
+
+    __tablename__ = "outbound_dispatches"
+
+    dispatch_id: Mapped[uuid.UUID] = uuid_pk()
+    business_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    attempt_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("recovery_attempts.attempt_id"), nullable=False)
+    at_risk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("revenue_at_risk.at_risk_id"), nullable=False)
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    # Carried on BOTH the voice and the WhatsApp row so the call is
+    # traceable to the nudge it refers to. Attribution never reads this --
+    # it reads recovery_attempts.recovery_token, which is set only on the
+    # nudge-bearing attempt, so a call can never be credited with a recovery.
+    recovery_token: Mapped[str | None] = mapped_column(Text)
+    priority: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="PENDING")
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivery_tries: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_delivery_tries: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Unique: a worker that dies between provider-accept and commit must not
+    # place the same call twice on the next pass.
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    provider_message_id: Mapped[str | None] = mapped_column(Text)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    cost_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('PENDING','IN_FLIGHT','SENT','FAILED','SUPPRESSED','EXPIRED','CANCELLED')",
+            name="outbound_dispatches_status_check",
+        ),
+        CheckConstraint(
+            "channel IN ('SMS','EMAIL','WHATSAPP','VOICE')", name="outbound_dispatches_channel_check"
+        ),
+        UniqueConstraint("idempotency_key", name="outbound_dispatches_idempotency_uq"),
+        # The drain query's index: claim PENDING rows that are due, highest priority first.
+        Index(
+            "ix_outbound_dispatches_claim",
+            "business_id",
+            "status",
+            "scheduled_for",
+            postgresql_include=["priority"],
+        ),
+        Index("ix_outbound_dispatches_attempt", "attempt_id"),
+    )
+
+
+# ---------------------------------------------------------------------
+# 10. Batch runs
 # ---------------------------------------------------------------------
 class RecoveryBatch(Base):
     __tablename__ = "recovery_batches"

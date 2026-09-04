@@ -14,12 +14,14 @@ Flagged for review like everything else without a literal spec.
 """
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import RecoveryAttempt, RecoveryOutcome, RevenueAtRisk
+from app.live_demo import live_demo_at_risk_ids
+from app.models import RecoveryOutcome, RevenueAtRisk
+from app.recovery import human_review
 
 NON_CLAIMABLE_SEGMENT_CATEGORY = "X_INSUFFICIENT_FUNDS"
 EXCLUDED_CATEGORIES = ("X_FRAUD", "X_BANK_BLOCK")
@@ -50,23 +52,24 @@ class BatchReport:
     segment: dict[str, CohortStats]
     suppressed_compliance: int = 0
     stopped_by_rules: int = 0
-    held_for_approval: int = 0
+    awaiting_human: int = 0
 
 
-def _cohort_for(session: Session, business_id: uuid.UUID, category_filter) -> dict[str, CohortStats]:
+def _cohort_for(
+    session: Session, business_id: uuid.UUID, category_filter, exclude_at_risk_ids: set[uuid.UUID]
+) -> dict[str, CohortStats]:
     stats = {"TREATMENT": CohortStats(), "HOLDOUT": CohortStats()}
 
     at_risk_rows = session.execute(
         select(RevenueAtRisk).where(RevenueAtRisk.business_id == business_id, category_filter)
     ).scalars().all()
 
+    latest_attempts = human_review.latest_attempt_by_at_risk(session, business_id)
+
     for at_risk in at_risk_rows:
-        attempt = session.execute(
-            select(RecoveryAttempt)
-            .where(RecoveryAttempt.at_risk_id == at_risk.at_risk_id)
-            .order_by(RecoveryAttempt.attempt_number.desc())
-            .limit(1)
-        ).scalars().first()
+        if at_risk.at_risk_id in exclude_at_risk_ids:
+            continue
+        attempt = latest_attempts.get(at_risk.at_risk_id)
         if attempt is None:
             continue
         cohort = stats[attempt.cohort]
@@ -90,16 +93,25 @@ def build_report(session: Session, business_id: uuid.UUID) -> BatchReport:
     total_items = len(all_at_risk)
     total_at_risk_minor = sum(r.at_risk_minor for r in all_at_risk)
 
+    # A row awaiting human review never contributes to treatment/holdout
+    # totals or rates, regardless of which cohort it was nominally in --
+    # the money is still real (total_at_risk_minor above is unaffected),
+    # it's just reported through the "in human hands" KPI instead. Same
+    # for a live-demo walk-up row: forced TREATMENT, forced consent, not
+    # part of the population the holdout measures -- see live_demo.py.
+    awaiting_ids = human_review.awaiting_human_at_risk_ids(session, business_id)
+    excluded_ids = awaiting_ids | live_demo_at_risk_ids(session, business_id)
+
     claimable_filter = RevenueAtRisk.claimable.is_(True)
-    claimable = _cohort_for(session, business_id, claimable_filter)
+    claimable = _cohort_for(session, business_id, claimable_filter, excluded_ids)
 
     segment_filter = RevenueAtRisk.loss_category == NON_CLAIMABLE_SEGMENT_CATEGORY
-    segment = _cohort_for(session, business_id, segment_filter)
+    segment = _cohort_for(session, business_id, segment_filter, excluded_ids)
 
     # Weak-attribution recoveries within the claimable population, excluded from the headline.
     weak_minor = 0
     for at_risk in all_at_risk:
-        if not at_risk.claimable:
+        if not at_risk.claimable or at_risk.at_risk_id in excluded_ids:
             continue
         outcome = session.execute(
             select(RecoveryOutcome).where(RecoveryOutcome.at_risk_id == at_risk.at_risk_id)
@@ -109,28 +121,23 @@ def build_report(session: Session, business_id: uuid.UUID) -> BatchReport:
 
     suppressed_compliance = 0
     stopped_by_rules = 0
-    held_for_approval = 0
-    latest_attempts = session.execute(
-        select(RecoveryAttempt.suppressed_reason, RecoveryAttempt.at_risk_id).where(RecoveryAttempt.business_id == business_id)
-    ).all()
-    seen_at_risk = set()
-    for suppressed_reason, at_risk_id in latest_attempts:
-        if at_risk_id in seen_at_risk:
+    awaiting_human = 0
+    for attempt in human_review.latest_attempt_by_at_risk(session, business_id).values():
+        if human_review.is_awaiting_human(attempt):
+            awaiting_human += 1
             continue
-        seen_at_risk.add(at_risk_id)
+        suppressed_reason = attempt.suppressed_reason
         if not suppressed_reason:
             continue
         if suppressed_reason.startswith(_COMPLIANCE_PREFIXES):
             suppressed_compliance += 1
         elif suppressed_reason.startswith(_RULE_REASONS_PREFIXES) or suppressed_reason in ("recovery_disabled_for_business", "emergency_stop", "dry_run"):
             stopped_by_rules += 1
-        elif suppressed_reason == "held_for_approval":
-            held_for_approval += 1
 
     return BatchReport(
         total_items=total_items, total_at_risk_minor=total_at_risk_minor,
         claimable=claimable, claimable_weak_excluded_minor=weak_minor, segment=segment,
-        suppressed_compliance=suppressed_compliance, stopped_by_rules=stopped_by_rules, held_for_approval=held_for_approval,
+        suppressed_compliance=suppressed_compliance, stopped_by_rules=stopped_by_rules, awaiting_human=awaiting_human,
     )
 
 
@@ -173,7 +180,7 @@ def render(report: BatchReport) -> str:
         f"  {sh.rate:.1f}% → {st.rate:.1f}%   lift {segment_lift:+.1f}pp",
         "NOT ACTIONED",
         f"  Suppressed by compliance {report.suppressed_compliance} · Stopped by rules {report.stopped_by_rules} "
-        f"· Held for approval {report.held_for_approval}",
+        f"· Awaiting human {report.awaiting_human}",
     ]
     return "\n".join(lines)
 
