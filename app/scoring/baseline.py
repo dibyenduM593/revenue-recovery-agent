@@ -33,22 +33,56 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
-def score(features: dict) -> float:
-    z = -0.30  # intercept: no evidence starts below coin-flip
-    z += SEGMENT_WEIGHT.get(features.get("segment"), 0.0)
-    z += 0.80 * ((features.get("prior_recovery_rate") if features.get("prior_recovery_rate") is not None else 0.5)) - 0.40
-    z += min((features.get("n_prior_transactions") or 0) * 0.05, 0.50)
-    z += max((features.get("contacts_last_7d") or 0) * -0.15, -0.45)
-    z += min((features.get("tenure_days") or 0) / 365 * 0.30, 0.40)
+def _terms(features: dict) -> dict[str, float]:
+    """Every additive term score() sums into z, named. The single source
+
+    both score() and explain_score() read from, so the two can never
+    silently disagree about what the model actually computed -- the same
+    discipline app/scoring/features.py's prepare_frame() holds for
+    train/serve, applied to score/explain instead.
+    """
+    terms = {"intercept": -0.30}
+    terms["segment"] = SEGMENT_WEIGHT.get(features.get("segment"), 0.0)
+    terms["prior_recovery_rate"] = 0.80 * (
+        features.get("prior_recovery_rate") if features.get("prior_recovery_rate") is not None else 0.5
+    ) - 0.40
+    terms["n_prior_transactions"] = min((features.get("n_prior_transactions") or 0) * 0.05, 0.50)
+    terms["contacts_last_7d"] = max((features.get("contacts_last_7d") or 0) * -0.15, -0.45)
+    terms["tenure_days"] = min((features.get("tenure_days") or 0) / 365 * 0.30, 0.40)
 
     if features.get("customer_type") == "B2C":
-        z += FAILURE_WEIGHT.get(features.get("failure_code_canonical"), 0.0)
-        z += max(0.40 - 0.10 * ((features.get("attempt_number") or 1) - 1), -0.20)
+        terms["failure_code_canonical"] = FAILURE_WEIGHT.get(features.get("failure_code_canonical"), 0.0)
+        terms["attempt_number"] = max(0.40 - 0.10 * ((features.get("attempt_number") or 1) - 1), -0.20)
     else:
         days_overdue = features.get("days_overdue") or 0.0
-        z -= min(days_overdue / 45.0 * 0.50, 1.00)
-        z -= (features.get("prior_late_rate") or 0.0) * 0.60
+        terms["days_overdue"] = -min(days_overdue / 45.0 * 0.50, 1.00)
+        terms["prior_late_rate"] = -(features.get("prior_late_rate") or 0.0) * 0.60
         if features.get("crosses_msmed_45d"):
-            z -= 0.30
+            terms["crosses_msmed_45d"] = -0.30
 
+    return terms
+
+
+def score(features: dict) -> float:
+    z = sum(_terms(features).values())
     return round(_sigmoid(z), 4)
+
+
+def explain_score(features: dict) -> dict:
+    """Same shape as app/scoring/model.py's explain_score() -- one
+
+    contribution per named term, an explicit base_value, summing exactly
+    to the same z score() computes -- except every number here is a
+    literal, human-typed coefficient (SEGMENT_WEIGHT, FAILURE_WEIGHT,
+    the 0.05/0.15/0.30 slopes...), not a value TreeSHAP derived from
+    training data. Fully transparent by construction; nothing to explain
+    that isn't already sitting in this file's own module-level tables.
+    """
+    terms = dict(_terms(features))
+    base_value = terms.pop("intercept")
+    z = base_value + sum(terms.values())
+    return {
+        "predicted_score": round(_sigmoid(z), 4),
+        "base_value": base_value,
+        "contributions": terms,
+    }

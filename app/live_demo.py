@@ -52,7 +52,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.bounds import FanOutLeg, execute_action
-from app.canonical.vocabulary import FAILURE_TAXONOMY, Action, Cohort, EntityType, FailureReason
+from app.canonical.vocabulary import (
+    FAILURE_TAXONOMY,
+    UNRESOLVED_STATUSES,
+    Action,
+    Cohort,
+    EntityType,
+    FailureReason,
+)
 from app.channels import voice_script_template
 from app.db import SessionLocal
 from app.models import (
@@ -442,12 +449,28 @@ def _yes_reply_event(business_id: uuid.UUID, payment_intent_id: str, amount_mino
     )
 
 
-def record_reply(from_number: str, body_text: str, *, business_id: Optional[uuid.UUID] = None) -> dict:
+def record_reply(
+    from_number: str, body_text: str, *, business_id: Optional[uuid.UUID] = None,
+    message_time: Optional[datetime] = None,
+) -> dict:
     """Twilio inbound-WhatsApp handler. A YES becomes a real ingested
 
     payment-success event carrying the nudge token; attribution then
     matches it as TOKEN_CLICK/STRONG on its next run, the same path a real
     payment link click would take. Never writes recovery_outcomes directly.
+
+    message_time is the reply's OWN timestamp (Twilio's date_sent when
+    polled -- see app/live_poll.py), not the moment this function happens
+    to run. A trial account only ever has one allowlisted number, so
+    re-polling Twilio's recent-messages list after any restart re-offers
+    old, already-answered replies as if new (see app/live_poll.py's
+    _seen_message_sids, which is in-memory and does not survive one).
+    Without this guard an old reply could redeem a token minted AFTER it
+    was sent -- closing out a fresh nudge nobody actually answered yet.
+    Requiring the matched attempt to have existed (been executed) at or
+    before the reply's own timestamp, and to still be open, is what
+    actually links a YES to the transaction it was replying to, rather
+    than to "whatever nudge is newest right now."
     """
     from fastapi.testclient import TestClient
 
@@ -465,6 +488,7 @@ def record_reply(from_number: str, body_text: str, *, business_id: Optional[uuid
     said_yes = normalized.startswith("y")
     phone = from_number.replace("whatsapp:", "").strip()
     now = datetime.now(timezone.utc)
+    reply_time = message_time or now
 
     session = SessionLocal()
     try:
@@ -474,21 +498,29 @@ def record_reply(from_number: str, body_text: str, *, business_id: Optional[uuid
         if customer is None:
             return {"ok": False, "reason": f"no customer for {phone}"}
 
-        # The most recent nudge-bearing attempt for this customer -- the one
-        # whose token a YES should redeem.
+        # The most recent nudge-bearing attempt for this customer that (a)
+        # already existed when this reply was sent and (b) is still
+        # unresolved -- the one whose token this specific YES should
+        # redeem, not just "whatever's newest in the table right now."
+        # UNRESOLVED_STATUSES, not just "OPEN": a nudge that actually went
+        # out moves its row to IN_RECOVERY (see launch()), so matching only
+        # OPEN would exclude precisely the rows that are waiting on a reply.
         attempt = session.execute(
             select(RecoveryAttempt)
+            .join(RevenueAtRisk, RevenueAtRisk.at_risk_id == RecoveryAttempt.at_risk_id)
             .where(
                 RecoveryAttempt.business_id == business_id,
                 RecoveryAttempt.customer_id == customer.customer_id,
                 RecoveryAttempt.recovery_token.is_not(None),
                 RecoveryAttempt.executed_at.is_not(None),
+                RecoveryAttempt.executed_at <= reply_time,
+                RevenueAtRisk.status.in_(UNRESOLVED_STATUSES),
             )
             .order_by(RecoveryAttempt.executed_at.desc())
             .limit(1)
         ).scalars().first()
         if attempt is None:
-            return {"ok": False, "reason": "no nudge awaiting a reply for this number"}
+            return {"ok": False, "reason": "no open nudge awaiting a reply for this number as of this message's time"}
 
         at_risk = session.get(RevenueAtRisk, attempt.at_risk_id)
         payment = session.get(Payment, at_risk.entity_id) if at_risk.entity_type == "PAYMENT" else None
@@ -513,7 +545,11 @@ def record_reply(from_number: str, body_text: str, *, business_id: Optional[uuid
 
     session = SessionLocal()
     try:
-        attribution_stats = run_attribution(session, business_id)
+        # Real wall-clock time, not run_attribution()'s own default (MAX
+        # RevenueEvent.occurred_at across the business) -- see
+        # app/live_poll.py's _sweep_attribution() for why that default is
+        # wrong for anything evaluating a real reply against a real window.
+        attribution_stats = run_attribution(session, business_id, clock=now)
         session.commit()
     finally:
         session.close()

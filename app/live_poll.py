@@ -1,7 +1,12 @@
 """Keeps detecting recovery after "Launch recovery actions" returns,
 
-for as long as the backend process stays up. Two things a single batch
-run cannot do on its own, both handled here on a repeating interval:
+for as long as the backend process stays up. Three things a single batch
+run cannot do on its own, all handled here on a repeating interval, and
+all general over EVERY real Twilio-routed call/message the business has
+outstanding -- not one hardcoded item. plant()/record_reply() are one
+sample path through the same pipeline this sweeps in bulk; it never asks
+"is this the demo's at_risk_id," only "is there a real Twilio send we
+haven't confirmed yet."
 
 1. A real WhatsApp reply has nowhere to land. app/live_demo.py's inbound
    webhook route exists, but nothing in the Twilio console is configured
@@ -12,7 +17,16 @@ run cannot do on its own, both handled here on a repeating interval:
    feed each through record_reply() -- the same function the webhook
    would have called, doing the same real ingestion, same attribution.
 
-2. A nudge's attribution window closes on its own schedule, not on a
+2. "SENT" in our own outbound_dispatches means Twilio's API accepted the
+   request -- it is NOT proof the call ever rang or the WhatsApp message
+   ever delivered. This sweeps every dispatch we believe we sent for
+   real and asks Twilio directly what actually happened (ringing /
+   completed / no-answer / busy / failed for a call; queued / delivered /
+   read / failed for a message), writing the verified status onto the
+   attempt's own channel_receipt rather than trusting our optimistic
+   write at send time.
+
+3. A nudge's attribution window closes on its own schedule, not on a
    button click. Re-running attribution and the nudge-retry pass here
    means a window closing at 3:47am gets picked up at 3:47am, not
    whenever someone next happens to click something.
@@ -29,9 +43,16 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL_SECONDS = 5
+POLL_INTERVAL_SECONDS = 10
+
+# Twilio call/message lifecycle states that will never change again --
+# once seen, a dispatch is dropped from future reconcile sweeps instead
+# of re-fetching an already-final status from Twilio forever.
+_TERMINAL_CALL_STATUSES = {"completed", "busy", "failed", "no-answer", "canceled"}
+_TERMINAL_MESSAGE_STATUSES = {"delivered", "read", "failed", "undelivered"}
 
 _seen_message_sids: set[str] = set()
+_reconciled_terminal: set[uuid.UUID] = set()
 _started_for: set[uuid.UUID] = set()
 _lock = threading.Lock()
 
@@ -58,19 +79,101 @@ def _poll_twilio_replies(business_id: uuid.UUID) -> None:
             continue
         _seen_message_sids.add(m.sid)
         try:
-            record_reply(m.from_, m.body, business_id=business_id)
+            record_reply(m.from_, m.body, business_id=business_id, message_time=m.date_sent or m.date_created)
         except Exception:  # noqa: BLE001
             logger.exception("live_poll: record_reply failed for message %s", m.sid)
 
 
+def _reconcile_twilio_dispatches(business_id: uuid.UUID) -> None:
+    """Every real (provider='twilio') dispatch we believe is SENT, checked
+
+    directly against Twilio's own record of it -- general over the whole
+    business's outstanding sends, not one at_risk_id. A call SID starts
+    with 'CA', a message SID with 'SM' or 'MM'; that prefix, not the
+    dispatch's channel column, decides which Twilio API to call, since
+    it's the one fact that can't drift out of sync with reality.
+    """
+    from app.settings import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+
+    if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
+        return
+
+    from twilio.rest import Client
+
+    from app.db import SessionLocal
+    from app.models import OutboundDispatch, RecoveryAttempt
+    from sqlalchemy import select
+
+    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    session = SessionLocal()
+    try:
+        rows = session.execute(
+            select(OutboundDispatch).where(
+                OutboundDispatch.business_id == business_id,
+                OutboundDispatch.provider == "twilio",
+                OutboundDispatch.status == "SENT",
+                OutboundDispatch.provider_message_id.is_not(None),
+            )
+        ).scalars().all()
+
+        for row in rows:
+            if row.dispatch_id in _reconciled_terminal:
+                continue
+            sid = row.provider_message_id
+            try:
+                if sid.startswith("CA"):
+                    call = client.calls(sid).fetch()
+                    provider_status = call.status
+                    extra = {"twilio_call_status": call.status, "twilio_call_duration_seconds": call.duration}
+                    terminal = provider_status in _TERMINAL_CALL_STATUSES
+                else:
+                    msg = client.messages(sid).fetch()
+                    provider_status = msg.status
+                    extra = {"twilio_message_status": msg.status, "twilio_error_code": msg.error_code}
+                    terminal = provider_status in _TERMINAL_MESSAGE_STATUSES
+            except Exception:  # noqa: BLE001 -- one bad fetch must not stop the sweep
+                logger.exception("live_poll: Twilio fetch failed for %s (dispatch %s)", sid, row.dispatch_id)
+                continue
+
+            attempt = session.get(RecoveryAttempt, row.attempt_id)
+            if attempt is not None:
+                receipt = dict(attempt.channel_receipt or {})
+                if receipt.get("twilio_verified_status") != provider_status:
+                    receipt["twilio_verified_status"] = provider_status
+                    receipt.update(extra)
+                    attempt.channel_receipt = receipt
+
+            if terminal:
+                _reconciled_terminal.add(row.dispatch_id)
+
+        session.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("live_poll: reconcile sweep failed")
+        session.rollback()
+    finally:
+        session.close()
+
+
 def _sweep_attribution(business_id: uuid.UUID) -> None:
+    from datetime import datetime, timezone
+
     from app.db import SessionLocal
     from app.recovery.attribution import run_attribution
     from app.recovery.nudge_retry import process_expired_nudges
 
+    # Real wall-clock time, not run_attribution()'s own default (MAX
+    # RevenueEvent.occurred_at across the whole business). That default
+    # exists for the pure-synthetic batch simulator, which has no real
+    # "now" -- but the bulk simulator plants B2B INVOICE_PAID events dated
+    # months out as part of its normal late-invoice modeling, so reusing
+    # that default here would compare a live item's real attribution
+    # window against a "now" that's already months in the future, marking
+    # it EXPIRED before any real reply had a chance to land.
+    now = datetime.now(timezone.utc)
+
     session = SessionLocal()
     try:
-        run_attribution(session, business_id)
+        run_attribution(session, business_id, clock=now)
         session.commit()
     except Exception:  # noqa: BLE001
         logger.exception("live_poll: run_attribution failed")
@@ -92,6 +195,7 @@ def _sweep_attribution(business_id: uuid.UUID) -> None:
 def _run_loop(business_id: uuid.UUID) -> None:
     while True:
         _poll_twilio_replies(business_id)
+        _reconcile_twilio_dispatches(business_id)
         _sweep_attribution(business_id)
         time.sleep(POLL_INTERVAL_SECONDS)
 
@@ -109,7 +213,3 @@ def start(business_id: uuid.UUID) -> bool:
     thread = threading.Thread(target=_run_loop, args=(business_id,), name=f"live-poll-{business_id}", daemon=True)
     thread.start()
     return True
-
-
-def is_running(business_id: uuid.UUID) -> bool:
-    return business_id in _started_for
