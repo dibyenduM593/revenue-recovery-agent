@@ -1,7 +1,7 @@
 """SQLAlchemy models mirroring schema.sql exactly.
 
 Column names, types, nullability, and constraints here are kept in lock
-step with schema.sql -- that file is the source of truth (the Day 2
+step with schema.sql -- that file is the source of truth (the initial
 migration applies it verbatim via op.execute), this module is its ORM
 mirror so app code gets typed attribute access instead of raw SQL.
 """

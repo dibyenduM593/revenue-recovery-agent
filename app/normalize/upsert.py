@@ -9,8 +9,8 @@ payment intent gets its OWN provider payment id in this data source, so
 payments practically always take the insert path; checkout/invoice take
 the update path on their second event (started -> completed,
 issued -> paid). Every successful upsert also writes one revenue_events
-row -- the unified log Day 5's risk detection and Day 10's attribution
-both read from, never derived by re-scanning entity tables.
+row -- the unified log risk detection and attribution both read from,
+never derived by re-scanning entity tables.
 """
 
 import uuid
@@ -31,7 +31,7 @@ from seed.generator import customer_profile_for
 from seed.reference import DEMO_SEED
 
 # uuid4() (crypto-random) for every internal id was the actual root cause
-# behind Day 12's determinism check failing: two runs from an identical
+# behind the determinism check failing: two runs from an identical
 # seed produced identical raw_events and revenue_at_risk totals, but
 # app/recovery/batch.py's `ORDER BY detected_at LIMIT 500` ties whenever
 # many records share one sweep's single now() call, and with random
@@ -387,7 +387,7 @@ def _upsert_dispute(
     """A dispute references an already-processed payment (like a refund does):
 
     an open dispute is a hard stop on contacting that customer about that
-    payment (Day 8), not a new loss category of its own.
+    payment, not a new loss category of its own.
     """
     if event.money is None:
         raise NormalizationError(NormalizationStage.VALIDATION, "dispute event has no amount")

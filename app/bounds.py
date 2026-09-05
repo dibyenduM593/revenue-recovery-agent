@@ -1,17 +1,17 @@
-"""Day 8: the H1-H10 hard-bounds chokepoint. execute_action() is the ONLY
+"""The H1-H10 hard-bounds chokepoint. execute_action() is the ONLY
 
 path to a channel dispatch -- policy.py decides what SHOULD happen; this
 decides whether it's ALLOWED to happen, and is the one place that writes
 recovery_attempts, so there is exactly one audit trail, not several.
 
-The literal H1-H10 list is never spelled out verbatim anywhere in the
-plan. H4 (open dispute), H5 (hard-bounced channel), and H8 (quiet hours)
-are anchored by data-generation.md's sad-path table, which names those
-numbers directly; the rest are constructed from the plan's own "Stopping
-rules: non-retryable, max attempts, open dispute, revoked mandate, refund
-pending" plus policy_bounds' own columns. Flagged for review, the same as
-the loss-category taxonomy was on Day 1 -- get it wrong and suppression
-counts in the eventual batch report are simply invented.
+The literal H1-H10 list is never spelled out verbatim in one place. H4
+(open dispute), H5 (hard-bounced channel), and H8 (quiet hours) are
+anchored by the sad-path failure taxonomy; the rest are constructed from
+the stopping rules this system needs regardless: non-retryable, max
+attempts, open dispute, revoked mandate, refund pending, plus
+policy_bounds' own columns. Flagged for review, the same as the
+loss-category taxonomy was -- get it wrong and suppression counts in the
+eventual batch report are simply invented.
 
 H1  consent            not opted in for this channel
 H2  mandate            a revoked/expired mandate blocks an automated CHARGE

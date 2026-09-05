@@ -1,7 +1,7 @@
 """The canonical event: what any provider payload normalizes into.
 
 Field descriptions below are not decoration -- they are read by the LLM
-mapping proposer (Day 4+) as the prompt that tells it what a given
+mapping proposer as the prompt that tells it what a given
 source_field in an unfamiliar payload probably maps to. Write them as if
 explaining the field to someone who has never seen this payload, because
 that is exactly the reader.
@@ -76,7 +76,7 @@ class CanonicalEvent(BaseModel):
         default=None,
         description="Who or what the provider blames for the failure: customer, business, "
         "bank, or gateway. This is the signal that separates a genuine customer-side decline "
-        "from a false decline (loss category A5) -- confirm on Day 6 whether Razorpay's "
+        "from a false decline (loss category A5) -- confirm whether Razorpay's "
         "payload actually populates this reliably.",
     )
     error_step: Optional[str] = Field(

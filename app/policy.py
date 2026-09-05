@@ -2,7 +2,7 @@
 mandate_state, value_minor) -> Action.
 
 Pure and side-effect-free by design -- no DB, no I/O -- so it is trivially
-unit-testable, and so Day 8's bounds.py can call it inside a single
+unit-testable, and so bounds.py can call it inside a single
 execute_action() chokepoint without worrying what else it might do.
 Versioned (POLICY_VERSION) because every recovery_attempts row snapshots
 which version decided it; changing this function's behavior without
@@ -10,7 +10,7 @@ bumping the version would silently rewrite history for attempts already
 decided under the old one.
 
 decide() answers "what would we naturally do here" -- it is not the last
-word. Day 8's bounds chokepoint enforces hard limits (consent, quiet
+word. The bounds chokepoint enforces hard limits (consent, quiet
 hours, spend caps, EMERGENCY_STOP) on top of whatever this returns, and
 can downgrade any Action to STOP. The one bound this module preempts on
 its own is human_approval_above_minor's spirit: a large loss defaults to
@@ -26,7 +26,7 @@ from app.canonical.vocabulary import FAILURE_TAXONOMY, Action, EntityType, Failu
 POLICY_VERSION = "policy@v1"
 
 # Matches policy_bounds.human_approval_above_minor's schema default (Rs 50,000).
-# Bounds.py (Day 8) enforces the hard, per-business-configurable version of this;
+# Bounds.py enforces the hard, per-business-configurable version of this;
 # this constant is just this module's own default-safe threshold.
 HUMAN_REVIEW_THRESHOLD_MINOR = 5_000_000
 

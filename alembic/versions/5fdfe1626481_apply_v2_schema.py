@@ -7,8 +7,8 @@ Create Date: 2026-08-26 00:00:00.000000
 Applies schema.sql verbatim as the initial migration. Supersedes the old
 16-table v1 migration (aebdd3c856df / a91ac556e233), removed outright
 rather than layered on top: this is still pre-Gate-B, dev-only, synthetic
-data, and the plan is explicit that schema.sql IS the initial migration,
-not a patch on the old one.
+data, and schema.sql IS the initial migration, not a patch on the old
+one.
 """
 from typing import Sequence, Union
 

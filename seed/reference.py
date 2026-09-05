@@ -72,10 +72,10 @@ def ensure_policy_bounds(session: Session, business_id: uuid.UUID) -> None:
 
 
 # One EMAIL, SMS, and WHATSAPP template per token-nudge / event-attributed
-# category that Day 9's channels can actually send. SMS/WHATSAPP carry a
+# category that the channel layer can actually send. SMS/WHATSAPP carry a
 # demo DLT/Meta registration id -- fake, clearly labelled -- since the
 # money_fields_need_human-style compliance check (registered_before_approved)
-# would otherwise refuse to mark them approved, and Day 9's SimulatedChannel
+# would otherwise refuse to mark them approved, and SimulatedChannel
 # needs an approved template to send through.
 _TEMPLATES = [
     # (channel, loss_category, body)

@@ -3,9 +3,9 @@
 The Python dict is the source of truth (see FAILURE_TAXONOMY's docstring
 for the caveat on how confident each category assignment is); this just
 mirrors it into the DB table so payments.failure_code_canonical's foreign
-key has something to reference. Day 1 built the dict but never actually
-ran this -- the gap only surfaces once something tries to insert a
-payments row with a canonical failure reason, which is Day 4's job.
+key has something to reference. The dict existed before this seed step
+was wired up -- the gap only surfaces once something tries to insert a
+payments row with a canonical failure reason.
 """
 
 import argparse

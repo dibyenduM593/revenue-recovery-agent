@@ -1,4 +1,4 @@
-"""Day 10: matches a recovery signal back to the at-risk record and
+"""Matches a recovery signal back to the at-risk record and
 
 attempt that (maybe) produced it.
 
@@ -11,13 +11,12 @@ run days to 90 days, wide enough that "this payment happened to land in
 the window" is real, not proof of causation. Every window check uses
 each attempt's own decided_at/attribution_expires_at, never now() --
 both because these events are backdated the same as everything else in
-this build, and because a wall-clock check is, per data-generation.md,
-"the single most likely silent bug in the whole build" in a
-time-compressed run.
+this build, and because a wall-clock check is the single most likely
+silent bug in a time-compressed run.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -129,9 +128,23 @@ _METHOD_FOR_ENTITY = {
 
 def run_attribution(session: Session, business_id: uuid.UUID, *, clock: Optional[datetime] = None) -> dict:
     if clock is None:
+        # "As of the last event we've seen" -- so replaying a historical
+        # synthetic corpus doesn't instantly expire every window just
+        # because the real date has moved on since the data was generated.
         clock = session.execute(
             select(func.max(RevenueEvent.occurred_at)).where(RevenueEvent.business_id == business_id)
         ).scalar_one()
+        # ...but never AHEAD of real time. The generator dates some
+        # INVOICE_PAID events months out (an invoice due date plus a
+        # payment delay lands past the anchor window), and a single such
+        # row drags this max into the future for the whole business --
+        # which then reads as "now" and expires every genuinely-live
+        # nudge, including a real one a human is still holding their
+        # phone waiting to answer. Nothing has happened in the future,
+        # so the clock is allowed to lag reality but never to lead it.
+        now = datetime.now(timezone.utc)
+        if clock is None or clock > now:
+            clock = now
 
     stats = {"strong": 0, "weak": 0, "expired": 0, "still_open": 0}
 

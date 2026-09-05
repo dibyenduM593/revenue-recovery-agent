@@ -163,14 +163,14 @@ class FailureCode:
     error_description: str
     error_source: str
     canonical: FailureReason
-    weight: float  # fraction of all failed payments, per data-generation.md's failure mix
+    weight: float  # fraction of all failed payments in the target failure mix
 
 
 # Two entries share canonical=DO_NOT_HONOR on purpose: the SAME provider
 # decline code ("payment_declined") arrives with error_source='bank' most of
 # the time and error_source='business' rarely -- that distinction, not the
 # failure_reason, is what A5 (false decline) actually depends on. Weights
-# sum to 1.0, matching data-generation.md's failure mix exactly.
+# sum to 1.0, matching the target failure mix exactly.
 FAILURE_CODES: list[FailureCode] = [
     FailureCode("BAD_REQUEST_ERROR", "insufficient_funds",
                 "Payment failed due to insufficient funds in the customer's account.",
@@ -251,8 +251,8 @@ class GeneratorConfig:
     # resolve the business from a fixed --seed, so it must stay stable.
     # content_seed drives everything else (which customer gets which
     # failure, which amount, which instrument): leave it None for the
-    # historical "one seed controls everything" behavior make demo /
-    # Gate D's determinism check relies on, or set it independently so the
+    # historical "one seed controls everything" behavior the demo's
+    # determinism check relies on, or set it independently so the
     # dashboard's orchestrator button can generate genuinely different
     # transaction data on every click without ever changing which business
     # the data belongs to.

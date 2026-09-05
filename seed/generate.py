@@ -1,4 +1,4 @@
-"""Phase 1 (data-generation.md Sec 3): loss events, delivered for real.
+"""Phase 1: loss events, delivered for real.
 
 The cardinal rule: this module builds provider-shaped payloads and POSTs
 them to the real endpoints -- it never touches a canonical table. Two

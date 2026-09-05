@@ -8,7 +8,7 @@ from being picked up again while it is still in flight, so a worker that
 dies mid-event lets a later pass reclaim it once locked_until has passed.
 That separation does not pay for itself today, when a stage is fast
 in-memory work, but it is the shape this loop needs once later stages call
-out to real channels (see the plan's Day 10 recovery channels).
+out to real recovery channels.
 """
 
 import time

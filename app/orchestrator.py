@@ -1,6 +1,6 @@
 """Backend logic behind the dashboard's buttons.
 
-Distinct from scripts/demo.py (Day 12's full clean-database rehearsal,
+Distinct from scripts/demo.py (the full clean-database rehearsal,
 which subprocess-chains each stage): this wipes and regenerates only the
 one demo business's transactional data, leaves schema/migrations/
 reference config untouched, and calls the generator's functions directly
@@ -43,7 +43,8 @@ BUSINESS_SEED = 42  # fixed: DEMO_BUSINESS_ID and every stage below resolve the 
 # message_templates, field_mappings, value_mappings, failure_taxonomy,
 # unmapped_fields -- authored/reference config that isn't regenerated.
 _TRANSACTIONAL_TABLES = [
-    "recovery_explanations", "recovery_outcomes", "recovery_tokens", "recovery_attempts", "recovery_batches",
+    "recovery_explanations", "outbound_dispatches", "customer_recovery_profile",
+    "recovery_outcomes", "recovery_tokens", "recovery_attempts", "recovery_batches",
     "revenue_at_risk", "revenue_events", "disputes", "invoices", "subscriptions", "checkout_sessions",
     "payments", "orders", "dead_letter_events", "raw_events", "source_mappings",
     "customer_contactability", "customers", "ops_alerts", "customer_merges",
@@ -196,6 +197,21 @@ def launch_recovery() -> dict:
     }
 
 
+def ensure_live_poll() -> dict:
+    """Restarts app.live_poll if it isn't already running for this business.
+
+    launch_recovery() starts it, but the thread lives only in-process --
+    a backend restart (code reload, crash, redeploy) or simply opening the
+    dashboard fresh drops it silently, and nothing then detects a real
+    WhatsApp reply until someone happens to click Launch again. The
+    dashboard's own page-load script calls this every time so live
+    detection resumes on its own, not only after that specific button.
+    """
+    from app.live_poll import start as start_live_poll
+
+    return {"live_poll_started": start_live_poll(_business_id())}
+
+
 def simulate_replies() -> dict:
     """The world simulator's response model, run once: reads recovery_attempts,
 
@@ -270,13 +286,28 @@ def get_kpis() -> dict:
         ).scalar_one()
 
         in_human_hands_minor = human_review.in_human_hands_minor(session, business_id)
+
+        # Unconditional grand total -- every RecoveryOutcome ever written
+        # for this business, RECOVERED or PARTIALLY_RECOVERED, from ANY
+        # source: the synthetic batch's treatment cohort, the holdout,
+        # human-review escalations, a live-demo YES reply, all of it. No
+        # claimable filter, no cohort filter, no live-demo exclusion --
+        # unlike report.py's Treatment/Holdout/Lift/Net (which deliberately
+        # wall a live-demo row out to keep the MEASURED number honest),
+        # this tile isn't measuring anything, it's just adding up every
+        # dollar that has actually come back, so it's the one number that
+        # moves the instant any recovery lands, from whatever source.
+        total_recovered_minor = session.execute(
+            select(func.coalesce(func.sum(RecoveryOutcome.recovered_minor), 0)).where(
+                RecoveryOutcome.business_id == business_id,
+                RecoveryOutcome.outcome.in_(("RECOVERED", "PARTIALLY_RECOVERED")),
+            )
+        ).scalar_one()
     finally:
         session.close()
 
     t, h = report.claimable["TREATMENT"], report.claimable["HOLDOUT"]
     lift_pp = t.rate - h.rate
-    baseline_expected_minor = int(t.at_risk_minor * (h.rate / 100)) if t.at_risk_minor else 0
-    net_minor = t.recovered_minor - baseline_expected_minor
 
     return {
         "total_items": report.total_items,
@@ -291,11 +322,11 @@ def get_kpis() -> dict:
             "recovered_minor": h.recovered_minor, "rate_pct": round(h.rate, 1),
         },
         "lift_pp": round(lift_pp, 1),
-        "net_minor": net_minor,
         "suppressed_compliance": report.suppressed_compliance,
         "stopped_by_rules": report.stopped_by_rules,
         "confidently_recoverable_minor": int(confidently_recoverable_minor),
         "in_human_hands_minor": in_human_hands_minor,
+        "total_recovered_minor": int(total_recovered_minor),
     }
 
 
@@ -720,7 +751,7 @@ def explain_batch_groups(batch_id: str) -> dict:
     of per transaction -- "why did this whole group of 63 end up executed"
     rather than 63 separate one-line explanations.
 
-    recovery_attempts has no batch_id column (the same Day 8 schema gap
+    recovery_attempts has no batch_id column (the same schema gap
     build_batch_evidence works around in app/explain.py), so attempts are
     correlated to this batch by falling inside [started_at, completed_at]
     -- safe here because run_batch() decides every entity synchronously

@@ -1,4 +1,4 @@
-"""Day 11: every rupee explainable.
+"""Every rupee explainable.
 
 Four scopes -- ATTEMPT, AT_RISK, BATCH, SUPPRESSION -- each backed by a
 deterministic evidence bundle built entirely from the ledger (never
@@ -13,9 +13,9 @@ every evidence bundle carries an explicit `verifiable_numbers` allowlist
 narrative prompt is instructed to use only those. Anything the model
 writes that isn't in that allowlist is flagged in `unverified_spans` and
 `numbers_verified` is set False, which the demo page treats as "do not
-trust this narrative, fall back to the template" per the plan's own cut
-order ("LLM explanations hallucinate figures -> Verifier already blocks
-display; fall back to templated narration").
+trust this narrative, fall back to the template": if an LLM explanation
+ever hallucinates a figure, the verifier already blocks display and
+templated narration takes over instead.
 
 Fails closed exactly like EmailChannel: no ANTHROPIC_API_KEY configured,
 or the call errors, or verification fails -> the deterministic template
@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     CheckoutSession,
     Customer,
+    CustomerRecoveryProfile,
     Invoice,
     Payment,
     RecoveryAttempt,
@@ -167,6 +168,44 @@ def build_attempt_evidence(session: Session, attempt_id: uuid.UUID) -> dict:
     }
 
 
+def _score_explanation(session: Session, at_risk_id: uuid.UUID) -> dict:
+    """Real per-feature attribution for the score this item was actually
+
+    ranked by, not an LLM guessing at a black box. Runs
+    app/scoring/port.py's explain_score() against the EXACT features
+    stored at scoring time (customer_recovery_profile.features) -- never
+    recomputed -- so the explanation cannot drift from what the score
+    actually saw. Empty dict if this item was never scored (RISK_MODEL=off,
+    or no batch has run since it was detected): never fabricated.
+    """
+    profile = session.execute(
+        select(CustomerRecoveryProfile).where(CustomerRecoveryProfile.at_risk_id == at_risk_id)
+    ).scalars().first()
+    if profile is None:
+        return {}
+
+    from app.scoring import port
+
+    explanation = port.explain_score(profile.features)
+    if explanation is None:
+        return {}
+
+    def _rounded(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return value
+        return round(value, 2)
+
+    top = sorted(explanation["contributions"].items(), key=lambda kv: -abs(kv[1]))[:5]
+    return {
+        "predicted_score": round(profile.predicted_score, 4),
+        "score_version": profile.score_version,
+        "score_top_factors": [
+            {"feature": name, "feature_value": _rounded(profile.features.get(name)), "contribution": round(value, 3)}
+            for name, value in top
+        ],
+    }
+
+
 def build_at_risk_evidence(session: Session, at_risk_id: uuid.UUID) -> dict:
     at_risk = session.get(RevenueAtRisk, at_risk_id)
     if at_risk is None:
@@ -194,6 +233,20 @@ def build_at_risk_evidence(session: Session, at_risk_id: uuid.UUID) -> dict:
     if outcome and outcome.recovered_minor:
         numbers.append(_inr(outcome.recovered_minor))
 
+    score_explanation = _score_explanation(session, at_risk_id)
+    if score_explanation:
+        pct = round(score_explanation["predicted_score"] * 100, 1)
+        numbers += [str(score_explanation["predicted_score"]), str(pct)]
+        for factor in score_explanation["score_top_factors"]:
+            # Both the signed value and its magnitude: a narrative describing
+            # direction in words ("pushed it down by 0.78") states the
+            # unsigned number, which won't string-match a signed "-0.78" in
+            # the allowlist otherwise.
+            numbers.append(str(factor["contribution"]))
+            numbers.append(str(abs(factor["contribution"])))
+            if isinstance(factor["feature_value"], (int, float)) and not isinstance(factor["feature_value"], bool):
+                numbers.append(str(factor["feature_value"]))
+
     return {
         "scope": "AT_RISK",
         "entity": _entity_label(session, at_risk.entity_type, at_risk.entity_id),
@@ -212,6 +265,7 @@ def build_at_risk_evidence(session: Session, at_risk_id: uuid.UUID) -> dict:
         "recovered_rupees": _inr(outcome.recovered_minor) if outcome else None,
         "attribution_method": outcome.attribution_method if outcome else None,
         "attribution_confidence": outcome.attribution_confidence if outcome else None,
+        **score_explanation,
         **_forensic_context(session, at_risk.entity_type, at_risk.entity_id),
         "verifiable_numbers": numbers,
     }
@@ -222,7 +276,7 @@ def build_batch_evidence(session: Session, batch_id: uuid.UUID) -> dict:
     if batch is None:
         raise ValueError(f"no recovery_batches row {batch_id}")
 
-    # recovery_attempts has no batch_id column (Day 8's schema), so there is
+    # recovery_attempts has no batch_id column, so there is
     # no way to scope the report strictly to this one batch's own attempts --
     # it reflects the business's current ledger as a whole. Honest about the
     # gap rather than pretending a scoping that doesn't exist.
@@ -332,6 +386,14 @@ def _template_narrative(bundle: dict) -> str:
         )
         if bundle["outcome"] == "RECOVERED":
             base += f" Recovered {bundle['recovered_rupees']} via {bundle['attribution_method']}."
+        if bundle.get("score_top_factors"):
+            pct = round(bundle["predicted_score"] * 100, 1)
+            top = bundle["score_top_factors"][0]
+            direction = "up" if top["contribution"] > 0 else "down"
+            base += (
+                f" Scored {pct}% recovery likelihood ({bundle['score_version']}); the largest factor was "
+                f"{top['feature']}={top['feature_value']}, pushing the score {direction} by {abs(top['contribution'])}."
+            )
         return base
     if scope == "BATCH":
         return (
@@ -406,6 +468,13 @@ _SYSTEM_PROMPT = (
     "everything recovered, or everything suppressed this run) rather than one single payment -- "
     "write about the group in aggregate (what it is, how many, why they ended up here, and any "
     "channel/reason breakdown given), not as if it were one transaction. "
+    "If the bundle includes `score_top_factors`, that is REAL per-feature attribution computed "
+    "directly from the scoring model against this exact row (XGBoost's own TreeSHAP-style "
+    "contributions, or the baseline scorer's own named coefficients) -- not your inference. Each "
+    "entry's `contribution` is signed: positive pushed the predicted_score up, negative pushed it "
+    "down. Use these to explain WHY the model scored this item the way it did (e.g. \"a low "
+    "prior_recovery_rate of 0.67 was the single biggest factor pushing the score down\"), citing "
+    "only the feature names, feature_values, and contribution numbers actually given. "
     "CRITICAL: the bundle's `verifiable_numbers` list is the ONLY numbers you may write -- do "
     "not compute, round, combine, or introduce any number not in that exact list. If you need "
     "to state something numeric that isn't in the list, describe it in words instead. Never "
@@ -451,7 +520,7 @@ def render_narrative(bundle: dict) -> ExplanationResult:
         verified, unverified = verify_numbers(llm_text, bundle)
         if verified:
             return ExplanationResult(llm_text, True, [], EXPLAIN_MODEL)
-        # LLM produced an unverifiable number -- per the plan, fall back rather than display it.
+        # LLM produced an unverifiable number -- fall back rather than display it.
 
     template_text = _template_narrative(bundle)
     verified, unverified = verify_numbers(template_text, bundle)

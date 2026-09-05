@@ -1,4 +1,4 @@
-"""Phase 2 (data-generation.md Sec 4): outcomes as a function of decisions.
+"""Phase 2: outcomes as a function of decisions.
 
 Never pre-generated, never randomized at attribution time -- either
 would make measured lift meaningless (identical treatment/holdout
@@ -31,12 +31,12 @@ from app.db import SessionLocal
 from app.models import Customer, Payment, RecoveryAttempt, RevenueAtRisk, SourceMapping
 from seed.generator import GeneratorConfig, business_id_for, latent_propensity
 
-# (loss_category, action) -> action_fit. See data-generation.md Sec 4 for the
-# handful of pairings given verbatim (EXPIRED_CARD/REQUEST_NEW_INSTRUMENT
-# 2.1x, EXPIRED_CARD/RETRY_SCHEDULED 1.0x, etc.) -- EXPIRED_CARD and
+# (loss_category, action) -> action_fit. A handful of pairings are fixed
+# by design (EXPIRED_CARD/REQUEST_NEW_INSTRUMENT 2.1x,
+# EXPIRED_CARD/RETRY_SCHEDULED 1.0x, etc.) -- EXPIRED_CARD and
 # INVALID_DETAILS both resolve to loss_category B3 in this build's
 # taxonomy, so both are keyed by B3 here. The rest are this build's own
-# extrapolation, keyed by loss_category since most of the spec's examples
+# extrapolation, keyed by loss_category since most worked examples
 # are given per failure_reason but B1/B4/B5 have none. Flagged for
 # review, same as the taxonomy and the H-bounds were.
 ACTION_FIT: dict[tuple[str, str], float] = {
@@ -65,9 +65,9 @@ MAX_P_RECOVER = 0.95
 # latent_propensity() is uniform[0,1) with mean 0.5 -- it exists to give each
 # customer a STABLE, re-derivable latent tendency, not to itself be a
 # realistic organic recovery rate. Scaled down so the holdout's organic rate
-# lands in a believable ~15% range and boosted (treatment) rates land in the
-# ~25-45% range the plan's own illustrative report sketches, rather than
-# every boosted case saturating at the 0.95 cap.
+# lands in a believable ~15% range and boosted (treatment) rates land in a
+# believable ~25-45% range, rather than every boosted case saturating at
+# the 0.95 cap.
 BASE_PROPENSITY_SCALE = 0.30
 
 
@@ -143,8 +143,24 @@ def _invoice_recovery_event(business_id, invoice_id: str, amount: int, currency:
 
 
 def simulate(session, business_id: uuid.UUID, *, seed: int) -> dict:
+    # Local import: app.live_demo reaches back into seed.generator, so a
+    # module-level import here closes the loop.
+    from app.live_demo import live_demo_at_risk_ids
+
     rng = random.Random(seed ^ 0x517)
     cfg = GeneratorConfig(seed=seed)
+
+    # A planted walk-up item belongs to the human holding the phone, and
+    # this function must never answer on their behalf. It would otherwise
+    # emit a success event carrying that row's REAL nudge token, which
+    # attribution then credits TOKEN_CLICK/STRONG -- indistinguishable
+    # from the person actually replying, except for a recovered_at landing
+    # somewhere random inside the 3-day window (often days out). Because
+    # the dashboard fires this a few seconds after launch, the simulator
+    # beat the human essentially every time, and the real YES then found
+    # the item already resolved and did nothing. Same boundary
+    # app/recovery/report.py already draws around these rows.
+    excluded = live_demo_at_risk_ids(session, business_id)
 
     rows = session.execute(
         select(RevenueAtRisk)
@@ -161,9 +177,16 @@ def simulate(session, business_id: uuid.UUID, *, seed: int) -> dict:
     ).scalars().all()
 
     events: list[dict] = []
-    stats = {"considered": 0, "boosted": 0, "base_only": 0, "recovered": 0, "skipped_no_customer": 0}
+    stats = {
+        "considered": 0, "boosted": 0, "base_only": 0, "recovered": 0,
+        "skipped_no_customer": 0, "skipped_live_demo": 0,
+    }
 
     for at_risk in rows:
+        if at_risk.at_risk_id in excluded:
+            stats["skipped_live_demo"] += 1
+            continue
+
         attempt = session.execute(
             select(RecoveryAttempt)
             .where(RecoveryAttempt.at_risk_id == at_risk.at_risk_id)

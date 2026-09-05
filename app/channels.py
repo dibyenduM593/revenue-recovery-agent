@@ -1,4 +1,4 @@
-"""Day 9 + outbound queue: cohort assignment, message payload construction,
+"""Outbound queue: cohort assignment, message payload construction,
 
 and the provider implementations that actually send.
 
@@ -232,7 +232,7 @@ def send_twilio_voice(to_number: str, script_text: str) -> tuple[str, dict, int,
 
     for the voice leg, deliberately: a callback URL would need a public
     tunnel to be up for the whole call, the exact dependency that killed
-    the Day 6 webhook attempt. <Say> only, no <Gather>; the WhatsApp
+    an earlier webhook attempt. <Say> only, no <Gather>; the WhatsApp
     opt-in has to happen via the recipient's own text to Twilio's sandbox
     regardless of anything a keypress could do.
     """

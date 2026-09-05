@@ -5,10 +5,9 @@ recoveries ever enter the claimable headline. Weak-attribution recoveries
 are real money, just not proven enough to claim; reported separately,
 never folded in.
 
-NET is not given a literal formula anywhere in the plan (the example
-batch report's own numbers do not appear to be internally arithmetically
-consistent -- it reads as illustrative, not a worked example) -- this
-implementation defines it as: what treatment recovered, minus what the
+NET has no single universally-agreed formula -- illustrative examples
+elsewhere don't appear to be internally arithmetically consistent, so
+this implementation defines it as: what treatment recovered, minus what the
 same money would have recovered organically at the holdout's own rate.
 Flagged for review like everything else without a literal spec.
 """

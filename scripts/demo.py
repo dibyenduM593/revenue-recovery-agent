@@ -1,4 +1,4 @@
-"""Day 12 / Gate D: `make demo` (or `python scripts/demo.py` directly --
+"""Gate D: `make demo` (or `python scripts/demo.py` directly --
 
 no `make` required, since Windows dev boxes often don't have it and this
 build should run cleanly for whoever pulls it). One command chaining

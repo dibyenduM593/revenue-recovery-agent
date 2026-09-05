@@ -3,8 +3,8 @@
 transaction list as a business owner would, launch recovery actions, and
 watch the (simulated) customer responses come back with real KPIs
 updating live. Plain server-rendered HTML + vanilla JS (fetch, no build
-step, no framework) -- matches the plan's own non-goal of a React SPA
-while still being a real, driven, stateful interface rather than a
+step, no framework) -- deliberately not a React SPA, while still being
+a real, driven, stateful interface rather than a
 collection of static links.
 """
 
@@ -68,6 +68,11 @@ def api_predictions(customer_type: str | None = None):
 @router.post("/dashboard/api/launch-recovery")
 def api_launch_recovery():
     return JSONResponse(orchestrator.launch_recovery())
+
+
+@router.post("/dashboard/api/ensure-live-poll")
+def api_ensure_live_poll():
+    return JSONResponse(orchestrator.ensure_live_poll())
 
 
 @router.post("/dashboard/api/simulate-replies")
@@ -474,16 +479,15 @@ function renderKpis(k) {
   const grid = document.getElementById('kpi-grid');
   const lift = k.lift_pp;
   const liftClass = lift > 0 ? 'up' : (lift < 0 ? 'down' : '');
-  const netClass = k.net_minor > 0 ? 'up' : (k.net_minor < 0 ? 'down' : '');
   grid.innerHTML = `
     <div class="kpi"><div class="label">Total at risk</div><div class="value">${fmtINR(k.total_at_risk_minor)}</div><div class="foot">${k.total_items} loss records</div></div>
     <div class="kpi"><div class="label">Treatment recovered</div><div class="value accent">${fmtINR(k.treatment.recovered_minor)}</div><div class="foot">${k.treatment.recovered_strong} of ${k.treatment.total} · ${k.treatment.rate_pct}%</div></div>
     <div class="kpi"><div class="label">Holdout recovered</div><div class="value">${fmtINR(k.holdout.recovered_minor)}</div><div class="foot">${k.holdout.recovered_strong} of ${k.holdout.total} · ${k.holdout.rate_pct}%</div></div>
     <div class="kpi"><div class="label">Lift</div><div class="value ${liftClass}">${lift > 0 ? '+' : ''}${lift}pp</div><div class="foot">treatment vs. holdout</div></div>
-    <div class="kpi"><div class="label">Net recovered</div><div class="value ${netClass}">${fmtINR(k.net_minor)}</div><div class="foot">vs. organic baseline</div></div>
     <div class="kpi"><div class="label">Confidently recoverable</div><div class="value accent">${fmtINR(k.confidently_recoverable_minor)}</div><div class="foot">open or in-recovery, &gt;80% chance</div></div>
     <div class="kpi"><div class="label">In human hands</div><div class="value">${fmtINR(k.in_human_hands_minor)}</div><div class="foot">awaiting a human decision</div></div>
     <div class="kpi"><div class="label">Not actioned</div><div class="value">${k.suppressed_compliance + k.stopped_by_rules}</div><div class="foot">${k.suppressed_compliance} compliance · ${k.stopped_by_rules} rules</div></div>
+    <div class="kpi"><div class="label">Total recovered</div><div class="value accent">${fmtINR(k.total_recovered_minor)}</div><div class="foot">every source, all-time -- not a measurement, just the total</div></div>
   `;
 }
 
@@ -618,9 +622,10 @@ function renderHumanQueue(items) {
       <td class="score-pct">${Math.round(it.predicted_score * 100)}%</td>
       <td>${escapeHtml(REASON_LABEL[it.reason] || it.reason)}</td>
       <td class="mono">${(it.decided_at || '').replace('T', ' ').slice(0, 19)}</td>
+      <td><button class="explain-btn" onclick="explainTransaction('${it.at_risk_id}', this)">Explain</button></td>
     </tr>`).join('');
   wrap.innerHTML = `<table>
-    <thead><tr><th>Item</th><th>Type</th><th>Entity</th><th>Value</th><th>Chance of recovery</th><th>Reason</th><th>Decided</th></tr></thead>
+    <thead><tr><th>Item</th><th>Type</th><th>Entity</th><th>Value</th><th>Chance of recovery</th><th>Reason</th><th>Decided</th><th>Explain</th></tr></thead>
     <tbody>${rowsHtml}</tbody>
   </table>`;
 }
@@ -970,6 +975,11 @@ async function plantLiveDemo() {
     `);
     document.getElementById('live-demo-status').textContent = 'Planted. Click "Launch recovery actions" above -- it fires the call + WhatsApp nudge along with the rest of the batch.';
     log(`Live demo: planted at_risk_id ${data.at_risk_id.slice(0, 8)} (${data.will_call_for_real ? 'real' : 'simulated'} routing). Click "Launch recovery actions" to fire it.`, 'ok');
+    // plant() already ingested a real at-risk row through the pipeline --
+    // total_items/total_at_risk_minor include it immediately, decided or
+    // not. Without this the KPI tiles stay stale until something else
+    // happens to trigger a refresh.
+    await refreshAll();
   } catch (e) {
     document.getElementById('live-demo-status').textContent = 'Planting failed: ' + e.message;
     log('Live demo plant failed: ' + e.message, 'warn');
@@ -1005,12 +1015,23 @@ let _liveKpiPollTimer = null;
 
 function startLiveKpiPolling() {
   if (_liveKpiPollTimer) return;  // already running -- clicking Launch again shouldn't stack up intervals
-  _liveKpiPollTimer = setInterval(refreshKpis, 6000);
+  _liveKpiPollTimer = setInterval(refreshKpis, 10000);
   log('Live detection on: KPIs will keep updating on their own as replies and nudge windows resolve.');
 }
 
+// Browsers throttle setInterval heavily in a backgrounded tab (Chrome can
+// stretch a 10s interval to a minute or more once it's been hidden a
+// while) -- the poll is still "running," it's just been starved by the
+// tab being unfocused, which looks identical to frozen from here. Forcing
+// one immediate refresh the moment the tab becomes visible again means
+// switching back always shows the true current numbers without waiting
+// for the throttled timer to catch up on its own.
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshKpis(); });
+
 refreshAll();
 refreshScenarios();
+startLiveKpiPolling();
+fetch('/dashboard/api/ensure-live-poll', { method: 'POST' }).catch(() => {});
 log('Dashboard loaded.');
 </script>
 </body>

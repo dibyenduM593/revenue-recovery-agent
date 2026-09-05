@@ -62,7 +62,7 @@ CREATE TABLE customers (
   -- get-or-create-by-email during normalization needs this to be race-safe
   -- (ON CONFLICT DO NOTHING) across concurrent workers; NULLs are distinct
   -- under a Postgres UNIQUE constraint, so customers with no email at all
-  -- are unaffected. Added Day 4, still pre-Gate-B.
+  -- are unaffected. Added early, still pre-Gate-B.
   UNIQUE (business_id, email_normalized)
 );
 CREATE INDEX ON customers (business_id, phone_e164);

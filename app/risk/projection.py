@@ -1,6 +1,6 @@
 """At-risk projection: what is at risk RIGHT NOW.
 
-Reads revenue_at_risk WHERE status='OPEN' only -- the ledger Day 5 built
+Reads revenue_at_risk WHERE status='OPEN' only -- the ledger is built
 incrementally, one row per loss as it's detected. There is no re-scan of
 raw_events or payments here; if the projection is ever wrong, the bug is
 in what wrote the ledger, not in this query.

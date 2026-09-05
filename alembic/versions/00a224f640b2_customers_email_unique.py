@@ -4,7 +4,7 @@ Revision ID: 00a224f640b2
 Revises: 5fdfe1626481
 Create Date: 2026-08-26 00:00:00.000000
 
-Day 4's normalize upsert stage does a get-or-create-by-email lookup
+The normalize upsert stage does a get-or-create-by-email lookup
 against `customers` from concurrent workers; without a unique constraint
 that has to be select-then-insert, which races. Replaces the plain index
 on (business_id, email_normalized) with a unique constraint (which is

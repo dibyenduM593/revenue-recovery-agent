@@ -128,7 +128,7 @@ def run_batch(session: Session, business_id: uuid.UUID, *, seed: int = 42, now: 
     # Candidates: every OPEN row, not yet limited -- the score decides which
     # ones survive the limit, so the limit has to apply after scoring, not
     # in SQL before it. entity_id stays as the deterministic tiebreaker
-    # (see the Day 12 determinism note this replaced): without one, a
+    # (see the determinism note this replaced): without one, a
     # single sweep's shared now() makes detected_at ties resolve to an
     # arbitrary subset on every run.
     candidates = session.execute(

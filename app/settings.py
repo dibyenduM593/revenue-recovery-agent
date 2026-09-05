@@ -10,11 +10,11 @@ DATABASE_URL = os.environ.get(
     "postgresql+psycopg://postgres:postgres@localhost:5432/revenue_recovery",
 )
 
-# This build has exactly one business (see seed/bootstrap.py). Real
+# This build has exactly one business (see seed/reference.py). Real
 # multi-tenant webhook routing -- resolving business_id from the
 # provider's own account id, or from a per-business URL segment -- is out
 # of scope for a solo demo; every inbound webhook is attributed here.
-# Default matches `python -m seed.bootstrap --seed 42`'s deterministic id;
+# Default matches `python -m seed.reference --seed 42`'s deterministic id;
 # override if you reseeded with a different --seed.
 DEMO_BUSINESS_ID = uuid.UUID(os.environ.get("DEMO_BUSINESS_ID", "6765c159-0551-59dd-bb83-bf5277a98f45"))
 
@@ -35,9 +35,9 @@ RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
 # checked first, before anything else, in bounds.execute_action().
 EMERGENCY_STOP = os.environ.get("EMERGENCY_STOP", "false").lower() in ("1", "true", "yes")
 
-# The one real channel (Day 9). Unset by default -- EmailChannel fails
+# The one real channel. Unset by default -- EmailChannel fails
 # closed (delivery_status SKIPPED_NOT_CONFIGURED) rather than fake-sending
-# when these aren't set. Per the plan, the real send target is the
+# when these aren't set. By design, the real send target is the
 # developer's own inbox ("email to yourself, proving the pipe"), not
 # synthetic customer addresses.
 SMTP_HOST = os.environ.get("SMTP_HOST")
@@ -65,7 +65,7 @@ TWILIO_ALLOWLIST = frozenset(
     n.strip() for n in os.environ.get("TWILIO_ALLOWLIST", "").split(",") if n.strip()
 )
 
-# Day 11: explainability. Unset by default -- explain.py fails closed to a
+# Explainability. Unset by default -- explain.py fails closed to a
 # deterministic template narrative (never fabricates, never blocks the demo)
 # rather than skipping explanation entirely when no key is configured.
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")

@@ -7,7 +7,7 @@ class EventType(str, Enum):
     PAYMENT_SUCCEEDED = "PAYMENT_SUCCEEDED"
     CHECKOUT_STARTED = "CHECKOUT_STARTED"
     CHECKOUT_COMPLETED = "CHECKOUT_COMPLETED"
-    CHECKOUT_ABANDONED = "CHECKOUT_ABANDONED"  # derived by the Day 5 sweep job; never a raw event_type_raw value
+    CHECKOUT_ABANDONED = "CHECKOUT_ABANDONED"  # derived by the sweep job; never a raw event_type_raw value
     INVOICE_ISSUED = "INVOICE_ISSUED"
     INVOICE_PAID = "INVOICE_PAID"
     INVOICE_OVERDUE = "INVOICE_OVERDUE"
@@ -67,7 +67,7 @@ class LossCategory(str, Enum):
     A1 = "A1"  # issuer/bank-side technical degradation
     A5 = "A5"  # false decline: gateway/bank declined a payment that should have gone through
     A6 = "A6"  # gateway/platform-side technical failure, not tied to a specific issuer
-    A7 = "A7"  # reserved: no FailureReason maps here yet, pending Day 6 real-payload findings
+    A7 = "A7"  # reserved: no FailureReason maps here yet, pending real-payload findings
     B1 = "B1"  # checkout abandoned -- nudge to complete, token-attributed
     B2 = "B2"  # subscription mandate lapsed -- nudge to re-authorize, event-attributed
     B3 = "B3"  # payment instrument issue -- nudge to update, token-attributed
@@ -101,9 +101,9 @@ class FailureTaxonomyEntry(NamedTuple):
 # The taxonomy IS the product: reason -> recoverability -> action -> bound.
 # Mirrors schema.sql's failure_taxonomy table 1:1 -- this dict is that
 # table's seed data. claimable/loss_category assignments below are a
-# best-effort reading of the plan's fragments (A5, A6, and the B1-B4 split
-# are not spelled out verbatim in the plan); confirm before Gate A, since
-# "if money is wrong, stop everything."
+# best-effort reading of ambiguous cases (A5, A6, and the B1-B4 split are
+# not clean-cut); confirm before Gate A, since "if money is wrong, stop
+# everything."
 FAILURE_TAXONOMY: dict[FailureReason, FailureTaxonomyEntry] = {
     FailureReason.INSUFFICIENT_FUNDS: FailureTaxonomyEntry(
         loss_category=LossCategory.X_INSUFFICIENT_FUNDS,
@@ -115,7 +115,7 @@ FAILURE_TAXONOMY: dict[FailureReason, FailureTaxonomyEntry] = {
         default_action=Action.RETRY_SCHEDULED,
         escalation_action=Action.NUDGE,
         attribution_window_seconds=7 * 86400,
-        notes="Segment-reported only, per the plan -- never enters the claimable headline number.",
+        notes="Segment-reported only -- never enters the claimable headline number.",
     ),
     FailureReason.ISSUER_UNAVAILABLE: FailureTaxonomyEntry(
         loss_category=LossCategory.A1,
@@ -176,7 +176,7 @@ FAILURE_TAXONOMY: dict[FailureReason, FailureTaxonomyEntry] = {
         escalation_action=Action.ESCALATE_HUMAN,
         attribution_window_seconds=24 * 3600,
         notes="Generic issuer decline -- may be a false decline (A5) rather than genuine customer "
-        "fault. Whether error_source actually separates the two is Day 6's open question.",
+        "fault. Whether error_source actually separates the two is an open question.",
     ),
     FailureReason.INVALID_DETAILS: FailureTaxonomyEntry(
         loss_category=LossCategory.B3,
@@ -227,23 +227,10 @@ class PaymentStatus(str, Enum):
     REFUNDED = "REFUNDED"
 
 
-class CheckoutStatus(str, Enum):
-    STARTED = "STARTED"
-    PAYMENT_STARTED = "PAYMENT_STARTED"
-    COMPLETED = "COMPLETED"
-    ABANDONED = "ABANDONED"
-
-
 class SubscriptionStatus(str, Enum):
     ACTIVE = "ACTIVE"
     PAST_DUE = "PAST_DUE"
     CANCELLED = "CANCELLED"
-
-
-class MandateType(str, Enum):
-    UPI_AUTOPAY = "UPI_AUTOPAY"
-    ENACH = "ENACH"
-    CARD_ON_FILE = "CARD_ON_FILE"
 
 
 class MandateStatus(str, Enum):
@@ -286,15 +273,6 @@ class EntityType(str, Enum):
     SUBSCRIPTION = "SUBSCRIPTION"
 
 
-class AtRiskStatus(str, Enum):
-    OPEN = "OPEN"
-    IN_RECOVERY = "IN_RECOVERY"
-    RECOVERED = "RECOVERED"
-    LOST = "LOST"
-    EXPIRED = "EXPIRED"
-    SUPPRESSED = "SUPPRESSED"
-
-
 class Cohort(str, Enum):
     TREATMENT = "TREATMENT"
     HOLDOUT = "HOLDOUT"
@@ -307,52 +285,11 @@ class Channel(str, Enum):
     VOICE = "VOICE"
 
 
-class DeliveryStatus(str, Enum):
-    SENT = "SENT"
-    DELIVERED = "DELIVERED"
-    BOUNCED = "BOUNCED"
-    FAILED = "FAILED"
+# revenue_at_risk.status values that mean "not finished with this yet" --
+# detected but undecided (OPEN), or nudged and awaiting a response
+# (IN_RECOVERY). Named once because the pair was previously spelled out
+# as a literal at every call site, and a copy that said only "OPEN"
+# silently stopped real WhatsApp replies from ever matching their nudge.
+UNRESOLVED_STATUSES = ("OPEN", "IN_RECOVERY")
 
 
-class AttributionKeyType(str, Enum):
-    TOKEN = "TOKEN"
-    PAYMENT_INTENT = "PAYMENT_INTENT"
-    ORDER = "ORDER"
-    INVOICE = "INVOICE"
-    CHECKOUT = "CHECKOUT"
-    SUBSCRIPTION = "SUBSCRIPTION"
-
-
-class OutcomeStatus(str, Enum):
-    RECOVERED = "RECOVERED"
-    PARTIALLY_RECOVERED = "PARTIALLY_RECOVERED"
-    NOT_RECOVERED = "NOT_RECOVERED"
-    EXPIRED = "EXPIRED"
-    STOPPED = "STOPPED"
-
-
-class AttributionMethod(str, Enum):
-    TOKEN_CLICK = "TOKEN_CLICK"
-    PAYMENT_INTENT_MATCH = "PAYMENT_INTENT_MATCH"
-    ORDER_MATCH = "ORDER_MATCH"
-    INVOICE_PAID = "INVOICE_PAID"
-    SUBSCRIPTION_CHARGED = "SUBSCRIPTION_CHARGED"
-    HOLDOUT_BASELINE = "HOLDOUT_BASELINE"
-
-
-class AttributionConfidence(str, Enum):
-    STRONG = "STRONG"
-    WEAK = "WEAK"
-
-
-class ExplanationScope(str, Enum):
-    ATTEMPT = "ATTEMPT"
-    AT_RISK = "AT_RISK"
-    BATCH = "BATCH"
-    SUPPRESSION = "SUPPRESSION"
-
-
-class MappingSource(str, Enum):
-    OFFICIAL_DOCUMENTATION = "official_documentation"
-    LLM_PROPOSED = "llm_proposed"
-    MANUAL = "manual"

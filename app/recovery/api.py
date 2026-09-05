@@ -11,7 +11,7 @@ router = APIRouter()
 
 @router.get("/r/{token}")
 def redirect_recovery_token(token: str):
-    """A click on this link is STRONG attribution evidence (Day 10): it
+    """A click on this link is STRONG attribution evidence: it
 
     proves this specific nudge, not just "the customer came back anyway".
     Recorded regardless of expiry -- a click on an expired token is still

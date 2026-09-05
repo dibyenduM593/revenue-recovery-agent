@@ -4,7 +4,7 @@ Every derived row in this system carries raw_event_id (see schema.sql's
 design rules), so this is a straight walk: revenue_at_risk -> the
 revenue_events row that triggered it (if any -- sweeps have none) -> the
 entity row it points to -> the raw_events row underneath that, payload
-and all. This is what Day 11's "click any rupee figure, see the
+and all. This is what "click any rupee figure, see the
 provider's raw bytes" is built on; today it's a plain endpoint, not yet
 wired to an explanation.
 """

@@ -16,7 +16,7 @@ def test_number_not_in_bundle_is_flagged():
 
 
 def test_digits_embedded_in_an_entity_id_are_not_flagged():
-    # This is the actual bug caught during Day 11 verification: a naive
+    # This is the actual bug caught during verification: a naive
     # scanning regex pulled "52816" out of "6f52816a" and flagged it as an
     # unverifiable financial figure. Whole-word tokenization must ignore it.
     verified, unverified = verify_numbers("Invoice 6f52816a: 322 at risk.", BUNDLE)
