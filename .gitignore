@@ -10,6 +10,16 @@ dist/
 build/
 seed/output/
 
+# Editor/agent tooling, local only
+.claude/
+.vscode/
+.idea/
+*.swp
+
+# OS junk
+.DS_Store
+Thumbs.db
+
 # Training data: regenerable from the ledger via app/scoring/export.py.
 # The model weights in models/ are what matter for results.
 data/
