@@ -1,10 +1,3 @@
-"""Create the demo business row that a generated event stream references.
-
-raw_events.business_id is a foreign key: a business has to exist before any
-of its events can be imported, exactly like a real merchant has to finish
-onboarding before their webhooks mean anything. Run this once per seed
-before uploading that seed's events.jsonl.
-"""
 
 import argparse
 from datetime import datetime, timezone

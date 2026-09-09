@@ -1,15 +1,4 @@
-"""Relaxes policy_bounds for a throwaway training-corpus business.
 
-The live demo's bounds (seed 42) are the product: max_entities_per_batch
-500 and a Rs 50,000 human-approval gate are what make the batch report
-and the approval-hold story real, so they are never touched. But when the
-same bounds are applied to a 39,000-item corpus run they stall it: the
-score x amount ordering floats the highest-value items to the top of
-every batch, nearly all of them trip the approval gate, and each call
-re-scores the entire open pool (O(n), ~51 min at this scale) only to
-execute nothing. Raising the bounds for that one disposable business lets
-a single scoring pass actually drain the pool.
-"""
 
 import argparse
 import sys

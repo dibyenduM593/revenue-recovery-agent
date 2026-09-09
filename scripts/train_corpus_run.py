@@ -1,17 +1,3 @@
-"""One-off orchestrator for building the training corpus at scale.
-
-Not part of make demo -- runs under a separate --seed so it creates a
-second business in the same DB rather than colliding with (or requiring
-a drop of) the seed=42 demo business scripts/demo.py maintains.
-
-decide+bound+execute only processes policy_bounds.max_entities_per_batch
-(500) items per call, so building a corpus larger than that requires
-looping it -- per the v6 plan's SS4/SS5.2 note, not raising the bound
-(raising it would change the thing the live demo shows). Stops once a
-call executes zero actions: the remaining OPEN pool at that point is
-permanently holdout/approval-held and will never resolve on its own.
-"""
-
 import argparse
 import subprocess
 import sys

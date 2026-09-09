@@ -1,12 +1,4 @@
-"""Seed failure_taxonomy from app.canonical.vocabulary.FAILURE_TAXONOMY.
 
-The Python dict is the source of truth (see FAILURE_TAXONOMY's docstring
-for the caveat on how confident each category assignment is); this just
-mirrors it into the DB table so payments.failure_code_canonical's foreign
-key has something to reference. The dict existed before this seed step
-was wired up -- the gap only surfaces once something tries to insert a
-payments row with a canonical failure reason.
-"""
 
 import argparse
 

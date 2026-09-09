@@ -1,8 +1,3 @@
-"""Resumes scripts/train_corpus_run.py from the decide+execute loop
-onward, for when generate (the ~110-minute stage) already succeeded and
-only the loop got interrupted. Skips reference seed / generate / sweeps
-entirely -- reads whatever's already in the DB for --seed.
-"""
 
 import argparse
 import subprocess
