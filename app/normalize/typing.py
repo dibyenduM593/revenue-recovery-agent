@@ -36,6 +36,7 @@ FIELD_COERCERS: dict[str, Callable[[Any], Any]] = {
     "provider_intent_id": str,
     "provider_subscription_id": str,
     "status_raw": str,
+    "payment_method": str,
     "failure_code_raw": str,
     "error_source": str,
     "error_step": str,

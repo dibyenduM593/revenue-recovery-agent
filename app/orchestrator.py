@@ -564,7 +564,11 @@ def _customer_type_summary(*, customer_type: str, entity_types: tuple[str, ...])
                     RecoveryOutcome.at_risk_id.in_(at_risk_ids)
                 )
             ).all():
-                if outcome == "RECOVERED":
+                # Both outcomes, matching get_kpis()'s total_recovered_minor and
+                # app/scoring/export.py's POSITIVE_OUTCOMES. Counting only
+                # RECOVERED here made the B2C/B2B tabs undercount the headline
+                # tile for the same money.
+                if outcome in ("RECOVERED", "PARTIALLY_RECOVERED"):
                     recovered_count += 1
                     recovered_minor += recovered
     finally:

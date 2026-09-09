@@ -33,7 +33,7 @@ from fastapi.testclient import TestClient
 from app.api import app
 from app.db import SessionLocal
 from app.models import Customer, CustomerContactability
-from app.settings import RAZORPAY_WEBHOOK_SECRET
+from app.settings import DEMO_BUSINESS_ID, RAZORPAY_WEBHOOK_SECRET
 from seed.generator import GeneratorConfig, business_id_for, generate_dataset
 
 CONTACT_CHANNELS = ["SMS", "EMAIL", "WHATSAPP", "VOICE"]
@@ -106,6 +106,16 @@ def deliver_webhook_smoke_test(client: TestClient, business_id, n: int = 5) -> d
     """
     if not RAZORPAY_WEBHOOK_SECRET:
         return {"skipped": "RAZORPAY_WEBHOOK_SECRET not set"}
+    # The webhook route attributes every delivery to settings.DEMO_BUSINESS_ID
+    # (single-tenant by design, see app/settings.py). This function took a
+    # business_id and never used it, so `--seed 7` posted seed-7 events at
+    # the seed-42 business id -- a raw_events foreign-key violation, not a
+    # clean error. Skip rather than post events that cannot land.
+    if business_id != DEMO_BUSINESS_ID:
+        return {
+            "skipped": f"webhook route posts to DEMO_BUSINESS_ID ({DEMO_BUSINESS_ID}), not this run's "
+                       f"business ({business_id}); set DEMO_BUSINESS_ID to smoke-test this seed"
+        }
 
     now = datetime.now(timezone.utc)
     results = {"posted": 0, "inserted": 0, "duplicates": 0}

@@ -63,11 +63,14 @@ def _poll_twilio_replies(business_id: uuid.UUID) -> None:
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
         return  # Twilio not configured -- nothing to poll, not an error
 
-    from twilio.rest import Client
-
     from app.live_demo import record_reply
 
     try:
+        # Imported here, not above: twilio is an optional dependency, and an
+        # ImportError raised outside this try propagated all the way out of
+        # _run_loop and killed the thread for good.
+        from twilio.rest import Client
+
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         messages = client.messages.list(limit=20)
     except Exception:  # noqa: BLE001 -- one bad poll must not kill the loop
@@ -98,13 +101,20 @@ def _reconcile_twilio_dispatches(business_id: uuid.UUID) -> None:
     if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
         return
 
-    from twilio.rest import Client
-
     from app.db import SessionLocal
     from app.models import OutboundDispatch, RecoveryAttempt
     from sqlalchemy import select
 
-    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    try:
+        # Both the import and the client construction: an unusable credential
+        # raises here, and outside the try that killed the polling thread.
+        from twilio.rest import Client
+
+        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    except Exception:  # noqa: BLE001
+        logger.exception("live_poll: Twilio client unavailable for reconcile")
+        return
+
     session = SessionLocal()
     try:
         rows = session.execute(
@@ -193,11 +203,28 @@ def _sweep_attribution(business_id: uuid.UUID) -> None:
 
 
 def _run_loop(business_id: uuid.UUID) -> None:
-    while True:
-        _poll_twilio_replies(business_id)
-        _reconcile_twilio_dispatches(business_id)
-        _sweep_attribution(business_id)
-        time.sleep(POLL_INTERVAL_SECONDS)
+    """One bad tick must never end the loop, and if the loop does end, say so.
+
+    Every step below already logs and swallows its own failures, but a
+    surprise raised between them (or by an optional import) used to unwind
+    straight out of the thread while business_id stayed in _started_for --
+    so start() kept answering "already running" for a thread that was gone,
+    and no real WhatsApp reply was ever detected again. The outer guard
+    keeps ticking, and the finally releases the slot so ensure_live_poll()
+    can genuinely restart it.
+    """
+    try:
+        while True:
+            try:
+                _poll_twilio_replies(business_id)
+                _reconcile_twilio_dispatches(business_id)
+                _sweep_attribution(business_id)
+            except Exception:  # noqa: BLE001 -- a tick is best-effort, the loop is not
+                logger.exception("live_poll: tick failed for business %s", business_id)
+            time.sleep(POLL_INTERVAL_SECONDS)
+    finally:
+        with _lock:
+            _started_for.discard(business_id)
 
 
 def start(business_id: uuid.UUID) -> bool:

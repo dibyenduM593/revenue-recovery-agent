@@ -56,6 +56,7 @@ python -m seed.reference          # authored config: business, taxonomy, mapping
 python -m seed.generate           # 800-customer, 30-day loss-event backlog, delivered over real HTTP
 python -m app.risk.sweeps         # checkout-abandonment + invoice-overdue detection
 python -m app.recovery.run --live # policy -> bounds -> channels, one batch of up to 500
+python -m app.dispatch_worker --once  # sends what the batch queued, stamps executed_at
 python -m seed.simulate_world     # response-model outcomes, delivered back through real ingestion
 python -m app.recovery.attribution
 python -m app.recovery.report     # prints the Gate C batch report

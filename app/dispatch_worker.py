@@ -297,5 +297,36 @@ def run_forever(poll_interval: float = 2.0) -> None:
             time.sleep(poll_interval)
 
 
+def main() -> None:
+    """`python -m app.dispatch_worker --once` is the batch pipeline's send step.
+
+    The dashboard calls drain() in-process (orchestrator.launch_recovery),
+    but scripts/demo.py chains each stage as its own subprocess and had no
+    module to call here at all, so a batch's queued nudges were authorized
+    and then never sent: executed_at stayed NULL, which silently turned off
+    the treatment boost in seed/simulate_world.py and the retry cadence in
+    app/recovery/nudge_retry.py. --once drains what is queued and exits;
+    without it this stays the long-running worker it always was.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Drain outbound_dispatches: send what the batch authorized.")
+    parser.add_argument("--once", action="store_true", help="drain the queue and exit, instead of polling forever")
+    parser.add_argument("--seed", type=int, default=42, help="seeds the simulated provider, and selects the business for --once")
+    args = parser.parse_args()
+
+    if not args.once:
+        run_forever()
+        return
+
+    from seed.generator import GeneratorConfig, business_id_for
+
+    business_id = business_id_for(GeneratorConfig(seed=args.seed))
+    stats = drain(seed=args.seed, business_id=business_id)
+    print(f"business_id: {business_id}")
+    for key, value in stats.items():
+        print(f"  {key}: {value}")
+
+
 if __name__ == "__main__":
-    run_forever()
+    main()

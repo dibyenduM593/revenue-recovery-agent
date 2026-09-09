@@ -64,6 +64,7 @@ _SUPPRESSION_MEANINGS = {
     "h8_quiet_hours": "It is currently outside the customer's allowed contact hours in their local timezone.",
     "h9_dnd_registered": "The customer's number is registered Do Not Disturb for SMS/WhatsApp/voice.",
     "h10_min_gap": "Not enough time has passed since the customer was last contacted.",
+    "no_approved_template": "No approved message template exists for this channel and loss category, so nothing could be sent without inventing the wording.",
     "held_for_approval": "The amount at risk exceeds the threshold requiring human approval before acting.",
     "dry_run": "The business is running in dry-run mode: decisions are recorded but nothing is sent.",
     "holdout_cohort": "This record was assigned to the holdout group, which is deliberately never contacted so its outcome measures what would have happened without any action.",

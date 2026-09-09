@@ -60,6 +60,12 @@ class CanonicalEvent(BaseModel):
         description="The provider's subscription ID, when this event is tied to a recurring "
         "billing relationship rather than a one-off payment or checkout.",
     )
+    payment_method: Optional[str] = Field(
+        default=None,
+        description="How the customer paid -- card, upi, netbanking, wallet -- as the provider names it. "
+        "Drives which instrument fields below are populated, and is a recovery-likelihood feature in its "
+        "own right, since a failed UPI collect and a failed card charge are not equally recoverable.",
+    )
     customer_email: Optional[str] = Field(default=None, description="The customer's email, as given by the provider, unnormalized.")
     customer_phone: Optional[str] = Field(default=None, description="The customer's phone number, as given by the provider, unnormalized.")
     failure_reason: Optional[FailureReason] = Field(

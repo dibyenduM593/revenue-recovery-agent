@@ -23,10 +23,12 @@ H3  policy stop        policy.py already decided STOP -- nothing to bound
 H4  open dispute        an OPEN dispute on the payment is a hard stop
 H5  hard-bounced        channel has hard-bounced before; never retry it
 H6  refund recorded     a refund already exists on this payment
-H7  contact cap         over policy_bounds.max_contacts_per_week
+H7  contact cap         over the customer's own max_contacts_per_week
+                        (falling back to policy_bounds')
 H8  quiet hours         outside the customer's allowed local hours
 H9  DND                 SMS/WhatsApp/voice to a DND-registered number
-H10 min gap             under policy_bounds.min_gap_hours since last contact
+H10 min gap             under the customer's own min_gap_hours since last
+                        contact (falling back to policy_bounds')
 
 Policy bounds (soft, business-configurable, checked only once every H
 passes): max_entities_per_batch, max_batch_spend_minor, max_sends_per_hour,
@@ -109,6 +111,8 @@ def _consent_snapshot(contact: Optional[CustomerContactability]) -> dict:
         "quiet_hours_start": contact.quiet_hours_start.isoformat(),
         "quiet_hours_end": contact.quiet_hours_end.isoformat(),
         "consecutive_failures": contact.consecutive_failures,
+        "max_contacts_per_week": contact.max_contacts_per_week,
+        "min_gap_hours": contact.min_gap_hours,
     }
 
 
@@ -205,6 +209,18 @@ def _check_channel_bounds(
         if _in_quiet_hours(now_ist, contact.quiet_hours_start, contact.quiet_hours_end):
             return "h8_quiet_hours"
 
+    # The customer's OWN pacing wins over the business default when it is
+    # set. customer_contactability carries both columns and nothing read
+    # them: the per-customer row was written by seed/generate.py and by
+    # live_demo's _force_contactability (which sets min_gap_hours=0 for a
+    # VOICE+WHATSAPP pair sent seconds apart) and then silently ignored in
+    # favour of policy_bounds. Seeded values match the business defaults,
+    # so this only changes behavior where an override was actually meant.
+    max_contacts_per_week = (
+        contact.max_contacts_per_week if contact.max_contacts_per_week is not None else bounds.max_contacts_per_week
+    )
+    min_gap_hours = contact.min_gap_hours if contact.min_gap_hours is not None else bounds.min_gap_hours
+
     week_ago = now - timedelta(days=7)
     contacts_this_week = session.execute(
         select(func.count())
@@ -216,12 +232,12 @@ def _check_channel_bounds(
             RecoveryAttempt.executed_at >= week_ago,
         )
     ).scalar_one()
-    if contacts_this_week >= bounds.max_contacts_per_week:
+    if contacts_this_week >= max_contacts_per_week:
         return "h7_contact_cap"
 
     if contact.last_contacted_at is not None:
         gap_hours = (now - contact.last_contacted_at).total_seconds() / 3600
-        if gap_hours < bounds.min_gap_hours:
+        if gap_hours < min_gap_hours:
             return "h10_min_gap"
 
     return None
@@ -383,6 +399,15 @@ def execute_action(
         leg_suppressed = entity_suppressed_reason or _check_channel_bounds(
             session, business=business, bounds=bounds, contact=contact, channel=leg.channel, now=now,
         )
+        # Checked before build_payload(), so no token is minted for a leg
+        # that cannot be rendered. A caller supplying its own body (the
+        # live-demo fan-out's LLM call script) needs no template at all.
+        if (
+            leg_suppressed is None
+            and leg.body_override is None
+            and not channels.has_approved_template(session, business.business_id, leg.channel, loss_category)
+        ):
+            leg_suppressed = "no_approved_template"
         if i == 0:
             first_leg_suppressed_reason = leg_suppressed
 

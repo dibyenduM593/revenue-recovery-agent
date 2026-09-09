@@ -130,7 +130,7 @@ def build_report(session: Session, business_id: uuid.UUID) -> BatchReport:
             continue
         if suppressed_reason.startswith(_COMPLIANCE_PREFIXES):
             suppressed_compliance += 1
-        elif suppressed_reason.startswith(_RULE_REASONS_PREFIXES) or suppressed_reason in ("recovery_disabled_for_business", "emergency_stop", "dry_run"):
+        elif suppressed_reason.startswith(_RULE_REASONS_PREFIXES) or suppressed_reason in ("recovery_disabled_for_business", "emergency_stop", "dry_run", "no_approved_template"):
             stopped_by_rules += 1
 
     return BatchReport(

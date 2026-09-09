@@ -24,6 +24,7 @@ def build_canonical_event(typed: dict, semantic: SemanticResult, money) -> Canon
             provider_entity_id=typed["provider_entity_id"],
             money=money,
             status_raw=typed.get("status_raw"),
+            payment_method=typed.get("payment_method"),
             provider_intent_id=typed.get("provider_intent_id"),
             provider_subscription_id=typed.get("provider_subscription_id"),
             customer_email=typed.get("customer_email"),

@@ -1,25 +1,3 @@
-"""Gate D: `make demo` (or `python scripts/demo.py` directly --
-
-no `make` required, since Windows dev boxes often don't have it and this
-build should run cleanly for whoever pulls it). One command chaining
-every stage that already works standalone:
-
-  drop -> migrate -> reference seed -> generate (800 customers, real HTTP)
-  -> sweeps -> decide+bound+execute -> simulate outcomes (real ingestion)
-  -> attribute -> render the batch report
-
-Deterministic by construction: every stage is seeded (--seed 42
-throughout) and the generator's base timestamp is fixed, never
-datetime.now() for anything that affects the numbers. Pass
---verify-determinism to run the whole chain twice from an empty database
-and diff the two batch reports byte-for-byte -- the actual Gate D
-acceptance check, not just a claim.
-
-Each stage runs as its own subprocess (python -m <module>), the same way
-a human would type these commands one at a time -- process isolation
-between stages, no shared import-time state to worry about, and it fails
-loudly (non-zero exit, stderr shown) the moment any single stage does.
-"""
 
 import argparse
 import subprocess
@@ -81,6 +59,14 @@ def run_once(seed: int, customers: int) -> tuple[str, dict]:
     timings["sweeps"] = _run("sweeps", ["app.risk.sweeps"])
     timings["decide + bound + execute"] = _run(
         "decide + bound + execute", ["app.recovery.run", "--seed", str(seed), "--live"]
+    )
+    # A channel-bearing action is only AUTHORIZED by the batch above; it is
+    # this step that actually sends it and stamps executed_at. Without it
+    # every nudge stays QUEUED forever, and simulate_world reads a NULL
+    # executed_at as "not treated" -- so the measured lift silently counts
+    # only the retry actions, never a nudge.
+    timings["dispatch (send queued)"] = _run(
+        "dispatch (send queued)", ["app.dispatch_worker", "--once", "--seed", str(seed)]
     )
     timings["simulate outcomes"] = _run("simulate outcomes", ["seed.simulate_world", "--seed", str(seed)])
     timings["attribution"] = _run("attribution", ["app.recovery.attribution", "--seed", str(seed)])

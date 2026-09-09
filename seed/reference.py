@@ -91,6 +91,15 @@ _TEMPLATES = [
     ("WHATSAPP", LossCategory.B2, "Your subscription renewal needs attention: {{link}}"),
     ("WHATSAPP", LossCategory.B3, "Your last payment didn't go through: {{link}}"),
     ("WHATSAPP", LossCategory.B4, "Invoice {{invoice_number}} is overdue: {{link}}"),
+    # X_INSUFFICIENT_FUNDS is reached by escalation, not by a sweep: the
+    # taxonomy retries a declined-for-funds payment 3 times and then hands
+    # it to NUDGE. Without these three rows that nudge had no template to
+    # render and app/bounds.py now suppresses it outright, so the one
+    # category the batch report measures as a segment could never be
+    # actioned at all.
+    ("EMAIL", LossCategory.X_INSUFFICIENT_FUNDS, "Your {{amount}} payment didn't go through. Try again when you're ready: {{link}}"),
+    ("SMS", LossCategory.X_INSUFFICIENT_FUNDS, "Payment of {{amount}} didn't go through. Retry: {{link}}"),
+    ("WHATSAPP", LossCategory.X_INSUFFICIENT_FUNDS, "Your {{amount}} payment didn't go through. You can retry here: {{link}}"),
 ]
 
 

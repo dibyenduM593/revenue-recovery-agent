@@ -139,6 +139,21 @@ def _mint_token(session: Session, *, business_id: uuid.UUID, at_risk_id: uuid.UU
     return token
 
 
+def has_approved_template(session: Session, business_id: uuid.UUID, channel: str, loss_category: str) -> bool:
+    """Whether this (channel, loss_category) can actually be rendered.
+
+    Checked by app/bounds.py BEFORE a leg is authorized, not after: with no
+    template, build_payload() below falls back to a placeholder string, and
+    that placeholder was being enqueued and really sent -- a customer on the
+    one live channel (email) received the literal
+    "(no approved EMAIL template for X_INSUFFICIENT_FUNDS)". Reachable
+    because INSUFFICIENT_FUNDS escalates to NUDGE once its retries are
+    exhausted, and no template was seeded for that category. Fails closed
+    now, same discipline as EmailChannel: no template, no send.
+    """
+    return _pick_template(session, business_id, channel, loss_category) is not None
+
+
 def _pick_template(session: Session, business_id: uuid.UUID, channel: str, loss_category: str) -> Optional[MessageTemplate]:
     return session.execute(
         select(MessageTemplate).where(

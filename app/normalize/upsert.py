@@ -184,6 +184,7 @@ def _upsert_payment(
             amount_minor=event.money.amount_minor,
             currency=event.money.currency,
             payment_status=semantic.status,
+            payment_method=event.payment_method,
             failure_code_raw=event.failure_code_raw,
             failure_code_canonical=event.failure_reason.value if event.failure_reason else None,
             error_source=event.error_source,
