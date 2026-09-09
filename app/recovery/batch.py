@@ -106,12 +106,10 @@ def _escalation_reason(
     return None
 
 
-def run_batch(session: Session, business_id: uuid.UUID, *, seed: int = 42, now: datetime | None = None) -> RecoveryBatch:
-    # seed no longer drives an in-process RNG here -- dispatch simulation
-    # moved to app/dispatch_worker.py, which seeds its own. Kept as a
-    # parameter for call-site compatibility (orchestrator.py already
-    # passes it) and because it's still the meaningful "which deterministic
-    # run is this" handle for anyone calling run_batch directly.
+def run_batch(session: Session, business_id: uuid.UUID, *, now: datetime | None = None) -> RecoveryBatch:
+    # No seed parameter: dispatch simulation moved to app/dispatch_worker.py,
+    # which seeds its own, and nothing in here draws from an RNG. Ordering is
+    # made deterministic by the explicit sort below, not by a seed.
     now = now or datetime.now(timezone.utc)
 
     business = session.get(Business, business_id)

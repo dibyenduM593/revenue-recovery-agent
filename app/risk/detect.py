@@ -28,7 +28,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.canonical.vocabulary import FAILURE_TAXONOMY, FailureReason, NormalizationStage
+from app.canonical.vocabulary import FAILURE_TAXONOMY, UNRESOLVED_STATUSES, FailureReason, NormalizationStage
 from app.models import Payment, RecoveryAttempt, RevenueAtRisk
 from app.normalize.structural import NormalizationError
 
@@ -175,7 +175,7 @@ def on_payment_succeeded(
         .where(
             RevenueAtRisk.business_id == business_id,
             RevenueAtRisk.entity_type == "PAYMENT",
-            RevenueAtRisk.status.in_(("OPEN", "IN_RECOVERY")),
+            RevenueAtRisk.status.in_(UNRESOLVED_STATUSES),
             Payment.payment_intent_id == payment_intent_id,
             ~select(RecoveryAttempt.attempt_id)
             .where(RecoveryAttempt.at_risk_id == RevenueAtRisk.at_risk_id)

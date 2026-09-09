@@ -22,7 +22,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, or_, select, update
-from sqlalchemy.orm import Session
 
 from app import channels
 from app.bounds import _check_channel_bounds  # the send-time re-check, deliberately reusing decision-time's own logic
@@ -80,7 +79,7 @@ def _claim_batch(business_id: uuid.UUID | None = None) -> list[uuid.UUID]:
 
 
 def _finalize_attempt(
-    session: Session, attempt: RecoveryAttempt, *, executed: bool, delivery_status: str | None,
+    attempt: RecoveryAttempt, *, executed: bool, delivery_status: str | None,
     channel_receipt: dict | None, cost_minor: int, suppressed_reason: str | None, now: datetime,
 ) -> None:
     if executed:
@@ -121,7 +120,7 @@ def _process_one(dispatch_id: uuid.UUID, rng: random.Random) -> str:
             row.sent_at = row.sent_at or now
             if attempt is not None and attempt.executed_at is None:
                 _finalize_attempt(
-                    session, attempt, executed=True, delivery_status="SENT",
+                    attempt, executed=True, delivery_status="SENT",
                     channel_receipt={"recovered_after_worker_restart": True,
                                      "provider_message_id": row.provider_message_id},
                     cost_minor=row.cost_minor, suppressed_reason=None, now=now,
@@ -134,7 +133,7 @@ def _process_one(dispatch_id: uuid.UUID, rng: random.Random) -> str:
             row.last_error = "stale: not sent before expires_at"
             if attempt is not None:
                 _finalize_attempt(
-                    session, attempt, executed=False, delivery_status=None, channel_receipt=None,
+                    attempt, executed=False, delivery_status=None, channel_receipt=None,
                     cost_minor=0, suppressed_reason="dispatch_expired_unsent", now=now,
                 )
             session.commit()
@@ -169,7 +168,7 @@ def _process_one(dispatch_id: uuid.UUID, rng: random.Random) -> str:
             row.last_error = send_time_reason
             if attempt is not None:
                 _finalize_attempt(
-                    session, attempt, executed=False, delivery_status=None, channel_receipt=None,
+                    attempt, executed=False, delivery_status=None, channel_receipt=None,
                     cost_minor=0, suppressed_reason=f"{send_time_reason}_at_send", now=now,
                 )
             session.commit()
@@ -234,7 +233,7 @@ def _process_one(dispatch_id: uuid.UUID, rng: random.Random) -> str:
             row.cost_minor = cost_minor
             if attempt is not None:
                 _finalize_attempt(
-                    session, attempt, executed=True, delivery_status=delivery_status, channel_receipt=receipt,
+                    attempt, executed=True, delivery_status=delivery_status, channel_receipt=receipt,
                     cost_minor=cost_minor, suppressed_reason=None, now=now,
                 )
                 if contact is not None:
@@ -251,7 +250,7 @@ def _process_one(dispatch_id: uuid.UUID, rng: random.Random) -> str:
             row.status = "FAILED"
             if attempt is not None:
                 _finalize_attempt(
-                    session, attempt, executed=False, delivery_status=delivery_status, channel_receipt=None,
+                    attempt, executed=False, delivery_status=delivery_status, channel_receipt=None,
                     cost_minor=0, suppressed_reason=f"dispatch_failed_{delivery_status.lower()}", now=now,
                 )
             session.commit()

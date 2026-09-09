@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.canonical.attribution_keys import provider_id_from
+from app.canonical.vocabulary import UNRESOLVED_STATUSES
 from app.models import Payment, RecoveryAttempt, RecoveryOutcome, RevenueAtRisk, RevenueEvent
 
 
@@ -150,7 +151,7 @@ def run_attribution(session: Session, business_id: uuid.UUID, *, clock: Optional
 
     at_risk_rows = (
         session.execute(
-            select(RevenueAtRisk).where(RevenueAtRisk.business_id == business_id, RevenueAtRisk.status.in_(["IN_RECOVERY", "OPEN"]))
+            select(RevenueAtRisk).where(RevenueAtRisk.business_id == business_id, RevenueAtRisk.status.in_(UNRESOLVED_STATUSES))
         )
         .scalars()
         .all()

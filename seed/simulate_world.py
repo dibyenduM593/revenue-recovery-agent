@@ -27,6 +27,7 @@ from sqlalchemy import select
 
 from app.api import app
 from app.canonical.attribution_keys import provider_id_from
+from app.canonical.vocabulary import UNRESOLVED_STATUSES
 from app.db import SessionLocal
 from app.models import Customer, Payment, RecoveryAttempt, RevenueAtRisk, SourceMapping
 from seed.generator import GeneratorConfig, business_id_for, latent_propensity
@@ -166,7 +167,7 @@ def simulate(session, business_id: uuid.UUID, *, seed: int) -> dict:
         select(RevenueAtRisk)
         .where(
             RevenueAtRisk.business_id == business_id,
-            RevenueAtRisk.status.in_(["IN_RECOVERY", "OPEN"]),
+            RevenueAtRisk.status.in_(UNRESOLVED_STATUSES),
         )
         # Explicit, fully deterministic order: this loop draws from `rng`
         # once per row, so an unordered SELECT (Postgres makes no promise

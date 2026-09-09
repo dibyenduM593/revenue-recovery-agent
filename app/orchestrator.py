@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from sqlalchemy import desc, func, select, text
 from sqlalchemy.orm import Session
 
+from app.canonical.vocabulary import UNRESOLVED_STATUSES
 from app.db import SessionLocal
 from app.models import (
     Business,
@@ -160,7 +161,7 @@ def launch_recovery() -> dict:
         business.dry_run = False
         session.commit()
 
-        batch = run_batch(session, business_id, seed=BUSINESS_SEED)
+        batch = run_batch(session, business_id)
         session.commit()
 
         pending_live_demo = session.execute(
@@ -280,7 +281,7 @@ def get_kpis() -> dict:
             .join(CustomerRecoveryProfile, CustomerRecoveryProfile.at_risk_id == RevenueAtRisk.at_risk_id)
             .where(
                 RevenueAtRisk.business_id == business_id,
-                RevenueAtRisk.status.in_(("OPEN", "IN_RECOVERY")),
+                RevenueAtRisk.status.in_(UNRESOLVED_STATUSES),
                 CustomerRecoveryProfile.predicted_score > 0.8,
             )
         ).scalar_one()
@@ -884,7 +885,7 @@ def _explain_group(label, definition, items, at_risk_by_id, payment_by_entity, i
     item_rows = []
     for a, outcome in items[:50]:
         ar = at_risk_by_id.get(a.at_risk_id)
-        payment, email = payment_by_entity.get(ar.entity_id, (None, None)) if ar else (None, None)
+        _payment, email = payment_by_entity.get(ar.entity_id, (None, None)) if ar else (None, None)
         item_rows.append({
             "payment_id": str(ar.entity_id)[:8] if ar else None,
             "customer_email": email,

@@ -23,14 +23,6 @@ DEMO_BUSINESS_ID = uuid.UUID(os.environ.get("DEMO_BUSINESS_ID", "6765c159-0551-5
 # `curl`ing) work without extra setup -- it is not a secret, it's a fixture.
 RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "dev_demo_webhook_secret_not_for_prod")
 
-# Test-mode API credentials (Settings -> API Keys in the Razorpay dashboard).
-# Unset by default -- anything that calls the real Razorpay API (payment
-# link creation, a card_id lookup) must check these are present and fail
-# closed/fall back to simulated behavior otherwise, the same fail-closed
-# discipline as EmailChannel.
-RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
-RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
-
 # Global kill switch, independent of any single business's dry_run flag --
 # checked first, before anything else, in bounds.execute_action().
 EMERGENCY_STOP = os.environ.get("EMERGENCY_STOP", "false").lower() in ("1", "true", "yes")
@@ -60,7 +52,6 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 TWILIO_VOICE_NUMBER = os.environ.get("TWILIO_VOICE_NUMBER")
 TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER")  # e.g. "whatsapp:+14155238886" (sandbox)
-TWILIO_WHATSAPP_JOIN_PHRASE = os.environ.get("TWILIO_WHATSAPP_JOIN_PHRASE")
 TWILIO_ALLOWLIST = frozenset(
     n.strip() for n in os.environ.get("TWILIO_ALLOWLIST", "").split(",") if n.strip()
 )

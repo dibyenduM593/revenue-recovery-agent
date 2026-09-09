@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.bounds import execute_action
-from app.canonical.vocabulary import Action, Cohort
+from app.canonical.vocabulary import UNRESOLVED_STATUSES, Action, Cohort
 from app.models import Business, PolicyBounds, RecoveryAttempt, RecoveryOutcome, RevenueAtRisk
 # Imported rather than re-declared: a second copy of this mapping would
 # drift from attribution.py's, and these two modules must label an
@@ -56,7 +56,7 @@ def process_expired_nudges(session: Session, business_id: uuid.UUID, *, now: Opt
 
     candidates = session.execute(
         select(RevenueAtRisk).where(
-            RevenueAtRisk.business_id == business_id, RevenueAtRisk.status.in_(["OPEN", "IN_RECOVERY"])
+            RevenueAtRisk.business_id == business_id, RevenueAtRisk.status.in_(UNRESOLVED_STATUSES)
         )
     ).scalars().all()
 

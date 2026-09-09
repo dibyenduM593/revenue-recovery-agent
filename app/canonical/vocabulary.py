@@ -50,11 +50,6 @@ class Action(str, Enum):
     STOP = "STOP"
 
 
-# Alias: the DB column is named `strategy`, so code that reads like the
-# schema can spell it either way.
-Strategy = Action
-
-
 class LossCategory(str, Enum):
     """WHAT kind of revenue loss this is (research A1..B4, X_*).
 
@@ -276,13 +271,6 @@ class EntityType(str, Enum):
 class Cohort(str, Enum):
     TREATMENT = "TREATMENT"
     HOLDOUT = "HOLDOUT"
-
-
-class Channel(str, Enum):
-    SMS = "SMS"
-    EMAIL = "EMAIL"
-    WHATSAPP = "WHATSAPP"
-    VOICE = "VOICE"
 
 
 # revenue_at_risk.status values that mean "not finished with this yet" --

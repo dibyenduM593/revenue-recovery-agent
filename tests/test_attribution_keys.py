@@ -1,6 +1,6 @@
 import uuid
 
-from app.canonical.attribution_keys import internal_id_from, make_key, provider_id_from, split_key
+from app.canonical.attribution_keys import make_key, provider_id_from, split_key
 
 INTERNAL = uuid.UUID("00103cd1-3c65-502c-b795-844ba69a6956")
 PROVIDER = "order_esDHleaMWUreZr"
@@ -22,7 +22,7 @@ def test_provider_half_is_what_attribution_matches_on():
 
 def test_internal_half_still_recoverable():
     key = make_key(INTERNAL, PROVIDER)
-    assert internal_id_from(key) == str(INTERNAL)
+    assert split_key(key)[0] == str(INTERNAL)
 
 
 def test_bare_internal_id_still_parses():

@@ -25,12 +25,12 @@ def test_digits_embedded_in_an_entity_id_are_not_flagged():
 
 
 def test_comma_grouped_number_matches_its_bundle_entry():
-    verified, unverified = verify_numbers("Payment has 2,476 at risk.", BUNDLE)
+    verified, _unverified = verify_numbers("Payment has 2,476 at risk.", BUNDLE)
     assert verified
 
 
 def test_percentage_matches_with_or_without_percent_sign_in_bundle():
-    verified, unverified = verify_numbers("Recovery rate was 5.8%.", BUNDLE)
+    verified, _unverified = verify_numbers("Recovery rate was 5.8%.", BUNDLE)
     assert verified
 
 

@@ -55,6 +55,3 @@ def split_key(value: str | None) -> tuple[str | None, str | None]:
 def provider_id_from(value: str | None) -> str | None:
     return split_key(value)[1]
 
-
-def internal_id_from(value: str | None) -> str | None:
-    return split_key(value)[0]

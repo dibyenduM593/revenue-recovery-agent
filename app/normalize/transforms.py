@@ -29,10 +29,6 @@ def _upper(value: Any) -> str:
     return str(value).upper()
 
 
-def _divide_by_100(value: Any) -> float:
-    return float(value) / 100
-
-
 def _decimal_string_to_minor(value: Any) -> int:
     """"1495.00" -> 149500. Shopify sends decimal-string major units, unlike
 
@@ -50,6 +46,5 @@ TRANSFORMS: dict[str, Callable[[Any], Any]] = {
     "unix_millis_to_datetime": _unix_millis_to_datetime,
     "iso_to_datetime": _iso_to_datetime,
     "upper": _upper,
-    "divide_by_100": _divide_by_100,
     "decimal_string_to_minor": _decimal_string_to_minor,
 }

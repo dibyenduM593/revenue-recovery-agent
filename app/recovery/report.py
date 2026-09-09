@@ -23,7 +23,6 @@ from app.models import RecoveryOutcome, RevenueAtRisk
 from app.recovery import human_review
 
 NON_CLAIMABLE_SEGMENT_CATEGORY = "X_INSUFFICIENT_FUNDS"
-EXCLUDED_CATEGORIES = ("X_FRAUD", "X_BANK_BLOCK")
 
 _COMPLIANCE_PREFIXES = ("h1_", "h2_", "h4_", "h5_", "h6_", "h9_")
 _RULE_REASONS_PREFIXES = ("h3_", "h7_", "h8_", "h10_")
@@ -33,7 +32,6 @@ _RULE_REASONS_PREFIXES = ("h3_", "h7_", "h8_", "h10_")
 class CohortStats:
     total: int = 0
     recovered_strong: int = 0
-    recovered_any: int = 0
     recovered_minor: int = 0
     at_risk_minor: int = 0
 
@@ -79,7 +77,6 @@ def _cohort_for(
             select(RecoveryOutcome).where(RecoveryOutcome.at_risk_id == at_risk.at_risk_id)
         ).scalars().first()
         if outcome is not None and outcome.outcome == "RECOVERED":
-            cohort.recovered_any += 1
             cohort.recovered_minor += outcome.recovered_minor
             if outcome.attribution_confidence == "STRONG":
                 cohort.recovered_strong += 1

@@ -30,10 +30,14 @@ H9  DND                 SMS/WhatsApp/voice to a DND-registered number
 H10 min gap             under the customer's own min_gap_hours since last
                         contact (falling back to policy_bounds')
 
-Policy bounds (soft, business-configurable, checked only once every H
-passes): max_entities_per_batch, max_batch_spend_minor, max_sends_per_hour,
-human_approval_above_minor (routes to HELD, not suppressed -- a human may
-still say yes).
+Policy bounds (soft, business-configurable): human_approval_above_minor
+is the one checked here, once every H passes, and it routes to HELD rather
+than suppressed -- a human may still say yes. max_entities_per_batch is
+applied by app/recovery/batch.py and max_sends_per_hour by
+app/dispatch_worker.py. policy_bounds also declares max_attempts_per_entity,
+max_batch_spend_minor and allow_automated_charge, which nothing reads: they
+are recorded in every attempt's bounds_snapshot but are not enforced, and
+this docstring previously claimed the spend cap was.
 """
 
 import uuid

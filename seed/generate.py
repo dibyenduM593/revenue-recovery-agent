@@ -42,7 +42,7 @@ OPT_OUT_RATE = 0.05
 HARD_BOUNCE_RATE = 0.03
 
 
-def _corrupt(rng: random.Random, event: dict) -> dict:
+def _corrupt(event: dict) -> dict:
     """1% of events, deliberately broken: the structural stage should
 
     find no event_type_raw at all and dead-letter it cleanly. An
@@ -78,7 +78,7 @@ def apply_sad_paths(cfg: GeneratorConfig, rng: random.Random, events: list[dict]
     for event in events:
         out.append(event)
         if rng.random() < cfg.malformed_rate:
-            out.append(_corrupt(rng, event))
+            out.append(_corrupt(event))
         if rng.random() < cfg.duplicate_delivery_rate:
             out.append(event)  # exact repeat -- exercises idempotency at scale
     return out

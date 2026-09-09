@@ -360,7 +360,7 @@ def _customer_amount(cfg: GeneratorConfig, rng: random.Random, customer: Custome
     return max(round(jittered, -2), cfg.min_amount_minor)
 
 
-def _pick_failure(cfg: GeneratorConfig, rng: random.Random) -> FailureCode:
+def _pick_failure(rng: random.Random) -> FailureCode:
     weights = [code.weight for code in FAILURE_CODES]
     return rng.choices(FAILURE_CODES, weights=weights, k=1)[0]
 
@@ -520,7 +520,7 @@ def _generate_payment_intents(cfg: GeneratorConfig, rng: random.Random,
             _maybe_dispute(entity, t)
             continue
 
-        failure = _pick_failure(cfg, rng)
+        failure = _pick_failure(rng)
         policy = FAILURE_TAXONOMY[failure.canonical]
         recovers = policy.retryable and rng.random() < 0.4
         max_attempts = policy.max_attempts if policy.retryable else 1
@@ -551,7 +551,7 @@ def _generate_checkouts(cfg: GeneratorConfig, rng: random.Random,
     if not customers:
         return []
     events: list[dict] = []
-    for i in range(cfg.n_checkouts):
+    for _ in range(cfg.n_checkouts):
         customer = rng.choice(customers)
         session_id = _rand_id(rng, "cs")
         amount = _amount(cfg, rng)
@@ -589,7 +589,7 @@ def _generate_invoices(cfg: GeneratorConfig, rng: random.Random,
     if not customers:
         return []
     events: list[dict] = []
-    for i in range(cfg.n_invoices):
+    for _ in range(cfg.n_invoices):
         customer = rng.choice(customers)
         invoice_id = _rand_id(rng, "inv")
         amount = _amount(cfg, rng)
@@ -647,7 +647,7 @@ def _generate_subscriptions(cfg: GeneratorConfig, rng: random.Random,
                                   f"evt_{payment_id}"))
             continue
 
-        failure = _pick_failure(cfg, rng)
+        failure = _pick_failure(rng)
         payment_id = _rand_id(rng, "pay")
         entity = _payment_entity(rng, payment_id, _rand_id(rng, "order"), amount,
                                   cfg.currency, customer, "failed", t, failure,

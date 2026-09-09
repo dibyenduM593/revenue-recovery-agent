@@ -42,7 +42,7 @@ def main() -> None:
                 business.dry_run = False
             session.commit()
 
-        batch = run_batch(session, business_id, seed=args.seed, now=now)
+        batch = run_batch(session, business_id, now=now)
         session.commit()
 
         print(f"batch {batch.batch_id}")

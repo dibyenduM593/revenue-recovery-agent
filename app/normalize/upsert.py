@@ -495,6 +495,10 @@ def _write_revenue_event(
     return result[0] if result is not None else None
 
 
+# Uniform signature, called positionally below: every handler takes the same
+# (session, business_id, provider, customer_id, event, semantic, raw_event_id,
+# mapping_version), so _upsert_order and _upsert_dispute declare arguments they
+# happen not to need. That is the dispatch table's contract, not dead parameters.
 _ENTITY_UPSERTS = {
     "payment": _upsert_payment,
     "checkout": _upsert_checkout,

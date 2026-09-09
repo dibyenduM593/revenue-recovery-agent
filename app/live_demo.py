@@ -204,7 +204,7 @@ def _demo_email_for(phone_e164: str) -> str:
     return f"live-demo-{digits}@demo.local"
 
 
-def _force_contactability(session: Session, business_id: uuid.UUID, customer_id: uuid.UUID, now: datetime) -> None:
+def _force_contactability(session: Session, business_id: uuid.UUID, customer_id: uuid.UUID) -> None:
     """A walk-up number has no seeded consent row, and the seeded ones are
 
     randomized. Every bound stays enforced -- this just sets the state a
@@ -306,7 +306,7 @@ def plant(phone_e164: str, scenario_key: str, *, business_id: Optional[uuid.UUID
         ).scalars().first()
 
         if payment.customer_id is not None:
-            _force_contactability(session, business_id, payment.customer_id, now)
+            _force_contactability(session, business_id, payment.customer_id)
 
         if at_risk is not None:
             # The one place this module marks its own rows. Not a shortcut

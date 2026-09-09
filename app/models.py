@@ -102,25 +102,6 @@ class CustomerContactability(Base):
     __table_args__ = (CheckConstraint("channel IN ('SMS','EMAIL','WHATSAPP','VOICE')", name="contactability_channel_check"),)
 
 
-class CustomerMerge(Base):
-    __tablename__ = "customer_merges"
-
-    merge_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    business_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    surviving_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    merged_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    method: Mapped[str] = mapped_column(Text, nullable=False)
-    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    merged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
-    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (
-        CheckConstraint(
-            "method IN ('exact_email','exact_phone','source_mapping','manual')", name="customer_merges_method_check"
-        ),
-    )
-
-
 class SourceMapping(Base):
     __tablename__ = "source_mappings"
 
@@ -289,18 +270,6 @@ class UnmappedField(Base):
     occurrences: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
     sample_value: Mapped[dict | None] = mapped_column(JSONB)
     triaged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-
-
-class ReprocessingRun(Base):
-    __tablename__ = "reprocessing_runs"
-
-    run_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    reason: Mapped[str] = mapped_column(Text, nullable=False)
-    from_version: Mapped[str | None] = mapped_column(Text)
-    to_version: Mapped[str | None] = mapped_column(Text)
-    events_affected: Mapped[int] = mapped_column(Integer, nullable=False)
-    amount_delta_minor: Mapped[int | None] = mapped_column(BigInteger)
-    ran_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 # ---------------------------------------------------------------------
@@ -723,20 +692,6 @@ class RecoveryExplanation(Base):
         ),
         Index("ix_recovery_explanations_business_scope_at_risk", "business_id", "scope", "at_risk_id"),
     )
-
-
-class OpsAlert(Base):
-    __tablename__ = "ops_alerts"
-
-    alert_id: Mapped[uuid.UUID] = uuid_pk()
-    business_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    alert_type: Mapped[str] = mapped_column(Text, nullable=False)
-    severity: Mapped[str] = mapped_column(Text, nullable=False)
-    detail: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    amount_minor: Mapped[int | None] = mapped_column(BigInteger)
-    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
-    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 # ---------------------------------------------------------------------
